@@ -25,9 +25,9 @@
 using namespace vsql;
 
 // Example function: adds two integers
-void add_impl(IntArg , IntArg , IntResult ) {
-  throw std::runtime_error("vsql_exceptions_test::add_impl");
+void exception_add(IntArg , IntArg , IntResult ) {
+  throw std::runtime_error("vsql_exceptions_test::exception_add");
 }
 
 VEF_GENERATE_ENTRY_POINTS(make_extension().func(
-    make_func<&add_impl>("error_add").returns(INT).param(INT).param(INT).build()))
+    make_func<&exception_add>("exception_add").returns(INT).param(INT).param(INT).build()))
