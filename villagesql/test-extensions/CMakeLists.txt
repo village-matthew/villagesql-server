@@ -37,6 +37,7 @@ vsql_add_test_extension(vsql-session-var-test          vsql_session_var_test)
 vsql_add_test_extension(vsql-noop-test                 vsql_noop_test)
 vsql_add_test_extension(vsql-on-init-test              vsql_on_init_test)
 vsql_add_test_extension(vsql-ext-index-test            vsql_ext_index_test)
+vsql_add_test_extension(vsql-exceptions-test           vsql_exceptions_test)
 
 # mysql_services capability test extensions consume raw MySQL component
 # services, so they need MySQL headers (MYSQL_HEADERS flag).
