@@ -31,6 +31,7 @@
 #include "villagesql/schema/descriptor/type_context.h"
 #include "villagesql/types/from_string_inference.h"
 #include "villagesql/types/util.h"
+#include "villagesql/vdf/exceptions.h"
 
 namespace villagesql {
 namespace vdf {
@@ -459,7 +460,9 @@ bool vdf_handler::invoke_numeric(T *out_value, bool *null_value) {
   result.error_msg = m_error_msg;
 
   // Call the VDF function
+  VDF_EXCEPTIONS_TRY
   m_udf->vdf_func_desc->vdf(&m_context, &m_vdf_args, &result);
+  VDF_EXCEPTIONS_CATCH
 
   // Handle result
   switch (result.type) {
