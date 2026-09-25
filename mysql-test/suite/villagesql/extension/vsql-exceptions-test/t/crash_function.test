@@ -1,0 +1,6 @@
+
+INSTALL EXTENSION vsql_exceptions_test;
+
+SELECT vsql_exceptions_test.error_add(10, 20);
+
+UNINSTALL EXTENSION vsql_exceptions_test;
