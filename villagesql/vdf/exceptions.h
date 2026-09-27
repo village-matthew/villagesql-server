@@ -19,17 +19,17 @@
 #define VDF_EXCEPTIONS_TRY \
   try {
 
-#define VDF_EXCEPTIONS_CATCH \
+#define VDF_EXCEPTIONS_CATCH(result__)          \
   } catch(const std::exception& ex) { \
-    result.type = VEF_RESULT_ERROR; \
-    if (nullptr != result.error_msg) { \
-      snprintf(result.error_msg, VEF_MAX_ERROR_LEN, \
+    (result__).type = VEF_RESULT_ERROR;         \
+    if (nullptr != (result__).error_msg) {          \
+      snprintf((result__).error_msg, VEF_MAX_ERROR_LEN,   \
                "VDF threw an exception (%s)", ex.what()); \
     } \
   } catch(...) { \
-    result.type = VEF_RESULT_ERROR; \
-    if (nullptr != result.error_msg) { \
-      snprintf(result.error_msg, VEF_MAX_ERROR_LEN,   \
+    (result__).type = VEF_RESULT_ERROR;         \
+    if (nullptr != (result__).error_msg) {            \
+      snprintf((result__).error_msg, VEF_MAX_ERROR_LEN, \
                "VDF threw an exception");       \
     } \
   }
