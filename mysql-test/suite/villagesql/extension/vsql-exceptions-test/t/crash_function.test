@@ -1,7 +1,43 @@
 
 INSTALL EXTENSION vsql_exceptions_test;
 
+#
+# 1. exception from simple function
+#
 --error 3200
 SELECT vsql_exceptions_test.exception_add(10, 20);
+
+#
+# 2. exception from accumulator function
+#
+CREATE TABLE exceptions_ints (
+       bad_data INT PRIMARY KEY
+       );
+
+INSERT INTO exceptions_ints VALUES (1);
+INSERT INTO exceptions_ints VALUES (2);
+INSERT INTO exceptions_ints VALUES (5);
+INSERT INTO exceptions_ints VALUES (7);
+
+--error 3200
+SELECT vsql_exceptions_test.exception_sum(bad_data) FROM exceptions_ints;
+
+#
+# 3. exception from accumulator clear
+#
+SELECT vsql_exceptions_test.exception_clear(bad_data) FROM exceptions_ints;
+
+#
+# 4. exception from accumulator constructor
+#
+--error 1123
+SELECT vsql_exceptions_test.exception_constr(bad_data) FROM exceptions_ints;
+
+#
+# 5. exception from accumulator destructor
+#
+SELECT vsql_exceptions_test.exception_destructr(bad_data) FROM exceptions_ints;
+
+DROP TABLE exceptions_ints;
 
 UNINSTALL EXTENSION vsql_exceptions_test;
