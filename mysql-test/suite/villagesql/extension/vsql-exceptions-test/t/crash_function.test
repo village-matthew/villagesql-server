@@ -1,3 +1,10 @@
+# VEF defines that user extensions must never throw an exception. But
+# not every piece of code is truly "exception proof".  VillageSQL adds
+# a try/catch layer between the server and the extensions as a safety
+# measure. An uncaught exception will end the mysql process.
+#
+# Each SELECT below invokes an extension function that
+# generates an exception (a throw) along one of the API callbacks.
 
 INSTALL EXTENSION vsql_exceptions_test;
 
