@@ -313,9 +313,7 @@ void vdf_handler::accumulate(bool *null_value) {
   result.type = VEF_RESULT_VALUE;
   m_error_msg[0] = '\0';
   result.error_msg = m_error_msg;
-
   m_udf->vdf_func_desc->accumulate(&m_context, &m_vdf_args, &result);
-
   switch (result.type) {
     case VEF_RESULT_VALUE:
       *null_value = false;
@@ -345,7 +343,6 @@ void vdf_handler::cleanup() {
     vef_postrun_args_t postrun_args{};
     postrun_args.user_data = m_vdf_args.user_data;
     vef_postrun_result_t postrun_result{};
-
     m_udf->vdf_func_desc->postrun(&m_context, &postrun_args, &postrun_result);
   }
   m_active = false;
@@ -461,6 +458,7 @@ bool vdf_handler::invoke_numeric(T *out_value, bool *null_value) {
   m_error_msg[0] = '\0';
   result.error_msg = m_error_msg;
 
+  // Call the VDF function
   m_udf->vdf_func_desc->vdf(&m_context, &m_vdf_args, &result);
 
   // Handle result
