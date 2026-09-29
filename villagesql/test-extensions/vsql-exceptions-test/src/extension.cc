@@ -30,36 +30,38 @@ void exception_add(IntArg , IntArg , IntResult ) {
 //
 // Exception in accumulater of function
 //
-using ExAccState = std::optional<long long>;
+struct ExAccState {
+  std::optional<long long> val;
 
-void ea_clear(ExAccState &s) { s = std::nullopt; }
-void ea_acc(ExAccState &s, IntArg v) {
-  if (!v.is_null()) s = s.value_or(0) + v.value();
-  if (3 < s.value_or(0)) {
-    throw std::bad_optional_access();
+  static void clear(ExAccState &s) { s.val = std::nullopt; }
+  static void acc(ExAccState &s, IntArg v) {
+    if (!v.is_null()) s.val = s.val.value_or(0) + v.value();
+    if (3 < s.val. value_or(0)) {
+      throw std::bad_optional_access();
+    }
   }
-}
-void ea_result(const ExAccState &s, IntResult out) {
-  if (!s.has_value()) { out.set_null(); return; }
-  out.set(s.value());
-}
 
+  static void result(const ExAccState &s, IntResult out) {
+    if (!s.val.has_value()) { out.set_null(); return; }
+    out.set(s.val.value());
+  }
+};
 //
 // Exception in accumulator clear
 //
 struct ExClearState {
   std::optional<long long> accum;
 
+  static void clear(ExClearState &s) { throw std::runtime_error("vsql_exceptions_test::ExClearState::clear"); }
+  static void acc(ExClearState &s, IntArg v) {
+    if (!v.is_null()) s.accum = s.accum.value_or(0) + v.value();
+  }
+  static void result(const ExClearState &s, IntResult out) {
+    if (!s.accum.has_value()) { out.set_null(); return; }
+    out.set(s.accum.value());
+  }
 };
 
-void eclr_clear(ExClearState &s) { throw std::runtime_error("vsql_exceptions_test::ExClearState::eclr_clear"); }
-void eclr_acc(ExClearState &s, IntArg v) {
-  if (!v.is_null()) s.accum = s.accum.value_or(0) + v.value();
-}
-void eclr_result(const ExClearState &s, IntResult out) {
-  if (!s.accum.has_value()) { out.set_null(); return; }
-  out.set(s.accum.value());
-}
 
 //
 // Exception in accumulater constuctor
@@ -68,16 +70,17 @@ struct ExConstrState {
   std::optional<long long> accum;
 
   ExConstrState() { throw std::runtime_error("vsql_exceptions_test::ExConstrState::ExConstrState"); }
+
+  static void clear(ExConstrState &s) { s.accum = std::nullopt; }
+  static void acc(ExConstrState &s, IntArg v) {
+    if (!v.is_null()) s.accum = s.accum.value_or(0) + v.value();
+  }
+  static void result(const ExConstrState &s, IntResult out) {
+    if (!s.accum.has_value()) { out.set_null(); return; }
+    out.set(s.accum.value());
+  }
 };
 
-void ec_clear(ExConstrState &s) { s.accum = std::nullopt; }
-void ec_acc(ExConstrState &s, IntArg v) {
-  if (!v.is_null()) s.accum = s.accum.value_or(0) + v.value();
-}
-void ec_result(const ExConstrState &s, IntResult out) {
-  if (!s.accum.has_value()) { out.set_null(); return; }
-  out.set(s.accum.value());
-}
 
 //
 // Exception in accumulater destructor
@@ -89,30 +92,30 @@ struct ExDestructrState {
   // C++ to signal and terminates. We do not catch a signal. This code merely tests the unlikely scenario
   // where we receive an exception instead.
   ~ExDestructrState() noexcept(false) { throw std::runtime_error("vsql_exceptions_test::ExDestructrState::~ExDestructrState"); }
-};
 
-void ed_clear(ExDestructrState &s) { s.accum = std::nullopt; }
-void ed_acc(ExDestructrState &s, IntArg v) {
-  if (!v.is_null()) s.accum = s.accum.value_or(0) + v.value();
-}
-void ed_result(const ExDestructrState &s, IntResult out) {
+  static void clear(ExDestructrState &s) { s.accum = std::nullopt; }
+  static void acc(ExDestructrState &s, IntArg v) {
+    if (!v.is_null()) s.accum = s.accum.value_or(0) + v.value();
+  }
+  static void result(const ExDestructrState &s, IntResult out) {
   if (!s.accum.has_value()) { out.set_null(); return; }
   out.set(s.accum.value());
-}
+  }
+};
 
 
 VEF_GENERATE_ENTRY_POINTS(make_extension()
                           .func(make_func<&exception_add>("exception_add").returns(INT).param(INT).param(INT).build())
-                          .func(make_aggregate_func<ExAccState, &ea_result>("exception_sum").returns(INT)
-                               .param(INT).clear<&ea_clear>().accumulate<&ea_acc>().build()
+                          .func(make_aggregate_func<ExAccState, &ExAccState::result>("exception_sum").returns(INT)
+                                .param(INT).clear<&ExAccState::clear>().accumulate<&ExAccState::acc>().build()
                                )
-                          .func(make_aggregate_func<ExClearState, &eclr_result>("exception_clear").returns(INT)
-                               .param(INT).clear<&eclr_clear>().accumulate<&eclr_acc>().build()
+                          .func(make_aggregate_func<ExClearState, &ExClearState::result>("exception_clear").returns(INT)
+                               .param(INT).clear<&ExClearState::clear>().accumulate<&ExClearState::acc>().build()
                                )
-                          .func(make_aggregate_func<ExConstrState, &ec_result>("exception_constr").returns(INT)
-                               .param(INT).clear<&ec_clear>().accumulate<&ec_acc>().build()
+                          .func(make_aggregate_func<ExConstrState, &ExConstrState::result>("exception_constr").returns(INT)
+                               .param(INT).clear<&ExConstrState::clear>().accumulate<&ExConstrState::acc>().build()
                                )
-                          .func(make_aggregate_func<ExDestructrState, &ed_result>("exception_destructr").returns(INT)
-                               .param(INT).clear<&ed_clear>().accumulate<&ed_acc>().build()
+                          .func(make_aggregate_func<ExDestructrState, &ExDestructrState::result>("exception_destructr").returns(INT)
+                                .param(INT).clear<&ExDestructrState::clear>().accumulate<&ExDestructrState::acc>().build()
                                )
                           )
