@@ -31,7 +31,6 @@
 #include "villagesql/schema/descriptor/type_context.h"
 #include "villagesql/types/from_string_inference.h"
 #include "villagesql/types/util.h"
-#include "villagesql/vdf/exceptions.h"
 
 namespace villagesql {
 namespace vdf {
@@ -255,9 +254,7 @@ bool vdf_handler::fix_fields(THD *thd [[maybe_unused]],
     prerun_result.result_buffer_size = 0;
     prerun_result.user_data = nullptr;
 
-    VDF_EXCEPTIONS_TRY
     m_udf->vdf_func_desc->prerun(&m_context, &prerun_args, &prerun_result);
-    VDF_EXCEPTIONS_CATCH(prerun_result)
 
     if (prerun_result.type == VEF_RESULT_WARNING ||
         prerun_result.type == VEF_RESULT_ERROR) {
@@ -307,14 +304,7 @@ bool vdf_handler::fix_fields(THD *thd [[maybe_unused]],
 }
 
 void vdf_handler::clear() {
-  vef_vdf_result_t result{};
-  result.type = VEF_RESULT_VALUE;
-  m_error_msg[0] = '\0';
-  result.error_msg = m_error_msg;
-
-  VDF_EXCEPTIONS_TRY
   m_udf->vdf_func_desc->clear(&m_context, &m_vdf_args);
-  VDF_EXCEPTIONS_CATCH(result)
 }
 
 void vdf_handler::accumulate(bool *null_value) {
@@ -324,9 +314,7 @@ void vdf_handler::accumulate(bool *null_value) {
   m_error_msg[0] = '\0';
   result.error_msg = m_error_msg;
 
-  VDF_EXCEPTIONS_TRY
   m_udf->vdf_func_desc->accumulate(&m_context, &m_vdf_args, &result);
-  VDF_EXCEPTIONS_CATCH(result)
 
   switch (result.type) {
     case VEF_RESULT_VALUE:
@@ -358,13 +346,7 @@ void vdf_handler::cleanup() {
     postrun_args.user_data = m_vdf_args.user_data;
     vef_postrun_result_t postrun_result{};
 
-    // TODO vef_postrun_result_t errors not reported
-    //  NOTE: class destructors default to "noexcept(true)". So a throw in a
-    //        destructor typically causes a signal which terminates the process.
-    //        This catch will not work.
-    VDF_EXCEPTIONS_TRY
     m_udf->vdf_func_desc->postrun(&m_context, &postrun_args, &postrun_result);
-    VDF_EXCEPTIONS_CATCH(postrun_result)
   }
   m_active = false;
 }
@@ -479,10 +461,7 @@ bool vdf_handler::invoke_numeric(T *out_value, bool *null_value) {
   m_error_msg[0] = '\0';
   result.error_msg = m_error_msg;
 
-  // Call the VDF function
-  VDF_EXCEPTIONS_TRY
   m_udf->vdf_func_desc->vdf(&m_context, &m_vdf_args, &result);
-  VDF_EXCEPTIONS_CATCH(result)
 
   // Handle result
   switch (result.type) {
@@ -588,9 +567,7 @@ String *vdf_handler::val_str(String *str, String *save_str,
       result.alt_str_buf = nullptr;
     }
 
-    VDF_EXCEPTIONS_TRY
     m_udf->vdf_func_desc->vdf(&m_context, &m_vdf_args, &result);
-    VDF_EXCEPTIONS_CATCH(result)
 
     if (result.type != VEF_RESULT_VALUE ||
         result.actual_len <= m_result_buffer_size) {

@@ -602,7 +602,7 @@ typedef struct {
 } vef_postrun_args_t;
 
 typedef struct {
-  // Reserved for future use (currently catching and ignoring exceptions)
+  // protocol > VEF_PROTOCOL_3
 
   // Result type: IS_VALUE on success, IS_ERROR on failure
   vef_return_value_type_t type;
