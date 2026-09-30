@@ -22,12 +22,11 @@
 //       ";".  All of the decorations are redundant.  Again,
 //       the purpose is to highlight variable scoping between.
 
-#define VDF_EXCEPTIONS_TRY \
-  try {
-
+#define VDF_EXCEPTIONS_TRY try {
 // TODO(villagesql-general): need a way to log these errors
 #define VDF_EXCEPTIONS_CATCH(result__)                      \
-  } catch(const std::exception& ex) {                       \
+  }                                                         \
+  catch (const std::exception &ex) {                        \
     if (VEF_PROTOCOL_3 < ctx->protocol) {                   \
       (result__)->type = VEF_RESULT_ERROR;                  \
       if (nullptr != (result__)->error_msg) {               \
@@ -35,7 +34,8 @@
                  "VDF threw an exception (%s)", ex.what()); \
       }                                                     \
     }                                                       \
-  } catch(...) {                                            \
+  }                                                         \
+  catch (...) {                                             \
     if (VEF_PROTOCOL_3 < ctx->protocol) {                   \
       (result__)->type = VEF_RESULT_ERROR;                  \
       if (nullptr != (result__)->error_msg) {               \
