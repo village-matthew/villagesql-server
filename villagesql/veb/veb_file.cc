@@ -22,8 +22,10 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <string_view>
 #include <system_error>
+#include <unordered_set>
 #include <vector>
 
 #include "my_config.h"
@@ -1026,6 +1028,9 @@ static bool load_one_extension(THD *thd, const std::string &extension_name,
     return true;
   }
 
+  // TODO(villagesql-production): unload on the failure paths below, as
+  // INSTALL EXTENSION does with a scope guard. The pending-update rollback
+  // continues past them, dropping the handle with capabilities populated.
   std::string reg_error;
   std::optional<ValidatedRegistration> validated = parse_extension_registration(
       *registration, extension_name, expected_version, reg_error);
@@ -1621,6 +1626,154 @@ static T lookup_symbol(void *handle, const char *symbol_name,
   return reinterpret_cast<T>(sym);
 }
 
+// Contents of one function descriptor. Reads only protocol-1 fields, so it is
+// safe for a descriptor declaring any protocol version. `index` names the slot
+// for descriptors that have no usable name of their own.
+static bool check_func_desc(const vef_func_desc_t *f, unsigned int index,
+                            std::string &error_message) {
+  if (f->name == nullptr) {
+    error_message =
+        "invalid func descriptor: no name at index " + std::to_string(index);
+    return true;
+  }
+  if (f->vdf == nullptr) {
+    error_message =
+        std::string("VDF '") + f->name + "' has no vdf function pointer";
+    return true;
+  }
+  if (f->signature == nullptr) {
+    error_message = std::string("VDF '") + f->name + "' has no signature";
+    return true;
+  }
+
+  const vef_signature_t *sig = f->signature;
+  // params is nullptr for a varargs signature by definition; the count is a
+  // sentinel there, not a length, so nothing below it may be indexed.
+  if (sig->param_count != VEF_PARAM_VARARGS) {
+    if (sig->param_count > 0 && sig->params == nullptr) {
+      error_message = std::string("VDF '") + f->name + "' declares " +
+                      std::to_string(sig->param_count) +
+                      " params but the params array is a nullptr";
+      return true;
+    }
+    for (unsigned int i = 0; i < sig->param_count; i++) {
+      if (sig->params[i].id == VEF_TYPE_CUSTOM &&
+          sig->params[i].custom_type == nullptr) {
+        error_message = std::string("VDF '") + f->name + "' param " +
+                        std::to_string(i + 1) +
+                        " is a CUSTOM type but names no type";
+        return true;
+      }
+    }
+  }
+  if (sig->return_type.id == VEF_TYPE_CUSTOM &&
+      sig->return_type.custom_type == nullptr) {
+    error_message = std::string("VDF '") + f->name +
+                    "' returns a CUSTOM type but names no type";
+    return true;
+  }
+  return false;
+}
+
+// Contents of one type descriptor, the counterpart to check_func_desc. Covers
+// only what every protocol requires of a v1 field, which is what lets this run
+// without knowing the negotiated protocol: a name to be addressed by, and a
+// decode buffer size.
+//
+// Deliberately unexamined: persisted_length and the presence of
+// encode/decode/compare. They became protocol-dependent, so they stay with the
+// per-protocol builders that can read those fields.
+static bool check_type_desc(const vef_type_desc_t *t, unsigned int index,
+                            std::string &error_message) {
+  if (t->name == nullptr) {
+    error_message =
+        "invalid type descriptor: no name at index " + std::to_string(index);
+    return true;
+  }
+  if (t->max_decode_buffer_length <= 0) {
+    error_message = std::string("type '") + t->name +
+                    "' declares max_decode_buffer_length " +
+                    std::to_string(t->max_decode_buffer_length) +
+                    " (must be > 0)";
+    return true;
+  }
+  return false;
+}
+
+bool check_vef_registration(const vef_registration_t *registration,
+                            std::string &error_message) {
+  if (registration == nullptr) {
+    error_message = "invalid registration: nullptr";
+    return true;
+  }
+  // The SDK rejects a half-registered pair at compile time; an extension that
+  // arrives with one anyway was not built by it.
+  if (registration->protocol >= VEF_PROTOCOL_4 &&
+      (registration->on_init == nullptr) !=
+          (registration->on_deinit == nullptr)) {
+    error_message =
+        registration->on_init == nullptr
+            ? "extension registers an on_deinit hook without an on_init"
+            : "extension registers an on_init hook without an on_deinit";
+    return true;
+  }
+  // Check registration function members.
+  if (registration->func_count > 0 && registration->funcs == nullptr) {
+    error_message =
+        "invalid registration: " + std::to_string(registration->func_count) +
+        " funcs but the funcs array is a nullptr";
+    return true;
+  }
+  for (unsigned int i = 0; i < registration->func_count; i++) {
+    if (registration->funcs[i] == nullptr) {
+      error_message =
+          "invalid registration: func descriptor nullptr at index " +
+          std::to_string(i);
+      return true;
+    }
+    // The SDK stamps every function descriptor with the registration's own
+    // protocol, so a lower one means the .so did not come from a supported
+    // path: extensions are built against the C++ API, not this ABI header.
+    // Consumers gate the post-v1 fields on the descriptor's protocol, so an
+    // inconsistent pair would have them reading past what the extension
+    // allocated. Establishing it here lets those consumers gate on the
+    // negotiated protocol alone.
+    //
+    // Type descriptors are deliberately exempt: the type builder computes
+    // their protocol per feature, so a type declaring less than its
+    // registration is the normal case.
+    if (should_assert_if_false(registration->funcs[i]->protocol >=
+                               registration->protocol)) {
+      error_message =
+          "invalid registration: func descriptor at index " +
+          std::to_string(i) + " declares protocol " +
+          std::to_string(
+              static_cast<unsigned>(registration->funcs[i]->protocol)) +
+          ", below the registration's " +
+          std::to_string(static_cast<unsigned>(registration->protocol));
+      return true;
+    }
+    if (check_func_desc(registration->funcs[i], i, error_message)) return true;
+  }
+  // Check registration type members.
+  if (registration->type_count > 0 && registration->types == nullptr) {
+    error_message =
+        "invalid registration: " + std::to_string(registration->type_count) +
+        " types but the types array is a nullptr";
+    return true;
+  }
+  for (unsigned int i = 0; i < registration->type_count; i++) {
+    if (registration->types[i] == nullptr) {
+      error_message =
+          "invalid registration: type descriptor nullptr at index " +
+          std::to_string(i);
+      return true;
+    }
+    if (check_type_desc(registration->types[i], i, error_message)) return true;
+  }
+  return false;
+}
+
 bool open_vef_extension(const std::string &so_path, vef_protocol_t max_protocol,
                         ExtensionRegistration &registration,
                         std::string &error_message) {
@@ -1662,7 +1815,7 @@ bool open_vef_extension(const std::string &so_path, vef_protocol_t max_protocol,
 
   vef_registration_t *reg = vef_register(&register_arg);
   if (reg == nullptr) {
-    error_message = "vef_register returned NULL";
+    error_message = "vef_register returned nullptr";
     dlclose(handle);
     return true;
   }
@@ -1670,6 +1823,7 @@ bool open_vef_extension(const std::string &so_path, vef_protocol_t max_protocol,
   const vef_protocol_t negotiated_protocol =
       std::min(max_protocol, reg->protocol);
 
+  // TODO(villagesql-general): Use create_scope_guard for cleanup.
   if (reg->error_msg != nullptr) {
     error_message =
         std::string("vef_register returned an error: ") + reg->error_msg;
@@ -1692,9 +1846,17 @@ bool open_vef_extension(const std::string &so_path, vef_protocol_t max_protocol,
     return true;
   }
 
-  // TODO(villagesql-production): Add more validation of the returned
-  // registration object (e.g. func/type descriptors, protocol version, null
-  // pointers).
+  // Establish the invariants every consumer of the registration relies on:
+  // funcs[] and types[] hold exactly count non-NULL descriptors, each function
+  // descriptor is callable and describable, and each type descriptor is named
+  // and decodable. What stays with the per-protocol builders is the
+  // protocol-dependent half; see check_vef_registration().
+  if (check_vef_registration(reg, error_message)) {
+    vef_unregister_arg_t unregister_arg = {negotiated_protocol};
+    vef_unregister(&unregister_arg, reg);
+    dlclose(handle);
+    return true;
+  }
 
   LogVSQL(INFORMATION_LEVEL,
           "Successfully loaded VEF extension '%s' (protocol %d, %d funcs, %d "
@@ -1725,6 +1887,43 @@ void close_vef_extension(const ExtensionRegistration &registration) {
   dlclose(registration.dlhandle);
 }
 
+namespace {
+
+// Registrations the server has taken through the load-hook point, and which
+// are therefore owed an unload hook. Tracking it is what keeps the two hooks
+// symmetric: an extension the server rejected, or one whose startup aborted
+// before run_extension_init_hooks(), must not see an unload it was never told
+// about.
+std::mutex g_load_hook_mutex;
+std::unordered_set<const vef_registration_t *> g_load_hook_done;
+
+// True when the registration carries the hook fields at all. An extension
+// built against an older SDK has no such member for us to read, so the
+// protocol gates the field rather than the value.
+bool has_lifecycle_hooks(const vef_registration_t *reg) {
+  return reg != nullptr && reg->protocol >= VEF_PROTOCOL_4;
+}
+
+}  // namespace
+
+void run_extension_on_init(const vef_registration_t *reg) {
+  if (!has_lifecycle_hooks(reg)) return;
+  {
+    std::lock_guard<std::mutex> lock(g_load_hook_mutex);
+    if (!g_load_hook_done.insert(reg).second) return;
+  }
+  if (reg->on_init != nullptr) reg->on_init();
+}
+
+void run_extension_on_deinit(const vef_registration_t *reg) {
+  if (!has_lifecycle_hooks(reg)) return;
+  {
+    std::lock_guard<std::mutex> lock(g_load_hook_mutex);
+    if (g_load_hook_done.erase(reg) == 0) return;
+  }
+  if (reg->on_deinit != nullptr) reg->on_deinit();
+}
+
 bool load_vef_extension(const villagesql::services::PopulateContext &ctx,
                         const std::string &so_path, vef_protocol_t max_protocol,
                         ExtensionRegistration &registration,
@@ -1752,6 +1951,17 @@ bool load_vef_extension(const villagesql::services::PopulateContext &ctx,
     registration.unregister_func = nullptr;
     return true;
   }
+
+  // Capabilities are live from here, so the extension's own load hook can use
+  // them. Nothing has called into the extension's functions yet.
+  //
+  // Startup is the exception: extensions load from init_server_components(),
+  // and the server does not apply persisted system-variable values until well
+  // after that, so a hook run here would read declared defaults. The startup
+  // path runs the hooks itself once that pass is done (see
+  // run_extension_init_hooks() in villagesql/sql/initialize.h).
+  if (ctx.reason != villagesql::services::LoadReason::kStartup)
+    run_extension_on_init(registration.registration);
   return false;
 }
 
@@ -1762,6 +1972,9 @@ void unload_vef_extension(const villagesql::services::DepopulateContext &ctx,
   }
 
   if (registration.registration != nullptr) {
+    // Mirror of load: the unload hook runs while the capabilities it was
+    // handed in on_init are still populated.
+    run_extension_on_deinit(registration.registration);
     villagesql::services::depopulate_capabilities(ctx,
                                                   registration.registration);
   }

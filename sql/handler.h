@@ -96,6 +96,11 @@ struct System_status_var;
 namespace dd {
 class Properties;
 }  // namespace dd
+namespace villagesql {
+// VillageSQL: defined (fully typed) in villagesql/sql/custom_index_handle.h;
+// forward-declared here so handler.h stays free of the preview VEF ABI.
+struct CustomIndexHandle;
+}  // namespace villagesql
 struct AccessPath;
 struct JoinHypergraph;
 struct KEY_CACHE;
@@ -5492,6 +5497,69 @@ class handler {
   int handle_records_error(int error, ha_rows *num_rows);
 
  public:
+  /**
+    VillageSQL: fetch the loaded custom-index handle for key number @p keynr.
+
+    Custom indexes have no B-tree; the storage engine loads the extension's
+    index instance (its vef_index_ctx_t + storage context) at table-open time
+    and owns its lifetime. The SQL-layer custom-index scan uses this to reach
+    that live instance instead of re-loading it, so it scans the engine's
+    actual storage. The handle type (villagesql::CustomIndexHandle) is defined
+    in villagesql/sql/custom_index_handle.h.
+
+    @param keynr  key number, indexing table->key_info[] (same numbering the
+                  engine uses).
+    @param[out] out  filled with the loaded handle on success. On failure it is
+                     not read from; the caller must treat a true return as
+                     "no custom scan" and not use @p out.
+
+    @retval false  @p keynr is a custom index and @p out was filled.
+    @retval true   not a custom index, or the engine does not support custom
+                   indexes — the caller must fall back (no custom scan).
+  */
+  virtual bool get_custom_index_handle(uint keynr [[maybe_unused]],
+                                       villagesql::CustomIndexHandle *out
+                                       [[maybe_unused]]) {
+    return true;
+  }
+
+  /**
+    VillageSQL: fetch a base-table row via a custom index's stable column
+    reference (REF_LOOKUP / HAS_COLUMN_REF read path).
+
+    For a custom KNN index the scan returns, per hit, the extension's stable
+    column reference (@p key_ref) rather than a primary key. The engine
+    resolves that reference to the owning row's identity (the clustered
+    field-0 bytes it snapshotted at insert) and reads the full row into @p buf,
+    entirely inside the engine — the SQL layer never needs the row's PK or its
+    byte format.
+
+    @param keynr    key number of the custom index (table->key_info[]).
+    @param key_ref  the extension's stable column reference (opaque uint64).
+    @param[out] buf record buffer to receive the fetched row (table->record[0]).
+    @param[out] row_not_found  set true (and false returned) when the reference
+                  resolves but the row is NOT VISIBLE to the current
+                  transaction's read view (MVCC) -- e.g. a KNN hit on a
+                  concurrently-inserted, uncommitted row. This is an expected
+                  outcome, not a hard error: the caller should SKIP this hit and
+                  fetch the next candidate rather than fail the query. nullptr
+    is allowed (callers that do not distinguish treat it as an error).
+    @param error_msg      buffer for an error description on failure.
+    @param error_msg_len  size of @p error_msg.
+
+    @retval false  the row was fetched into @p buf, OR (with row_not_found set)
+                   the row was not visible and should be skipped.
+    @retval true   not a custom index, unsupported, or the fetch failed.
+  */
+  virtual bool custom_index_ref_to_row(uint keynr [[maybe_unused]],
+                                       uint64_t key_ref [[maybe_unused]],
+                                       uchar *buf [[maybe_unused]],
+                                       bool *row_not_found [[maybe_unused]],
+                                       char *error_msg [[maybe_unused]],
+                                       uint error_msg_len [[maybe_unused]]) {
+    return true;
+  }
+
   /**
     Wrapper function to call records() in storage engine.
 

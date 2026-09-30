@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "custom_column.h"
+#include "custom_index_helper_fn_name.h"
 #include "storage/innobase/include/data0data.h"
 #include "storage/innobase/include/dict0dd.h"
 #include "storage/innobase/include/dict0dict.h"
@@ -31,7 +32,11 @@
 #include "storage/innobase/include/ha_prototypes.h"
 #include "storage/innobase/include/mach0data.h"
 #include "storage/innobase/include/mem0mem.h"
+#include "storage/innobase/include/mtr0mtr.h"
+#include "storage/innobase/include/trx0sys.h"
+#include "storage/innobase/include/trx0trx.h"
 #include "storage/innobase/include/univ.i"
+#include "storage/innobase/villagesql/custom_column.h"
 #include "villagesql/schema/descriptor/index_context.h"
 #include "villagesql/schema/descriptor/index_profile_descriptor.h"
 #include "villagesql/schema/descriptor/index_type_descriptor.h"
@@ -347,6 +352,68 @@ static dberr_t parse_index_options(dict_index_t *index,
   return DB_SUCCESS;
 }
 
+bool Custom_index::col_ref_to_rowid(const dict_index_t *index,
+                                    vef_storage_col_ref_t key_ref,
+                                    unsigned char *out, uint32_t out_cap,
+                                    uint32_t *out_len, char *error_msg,
+                                    uint32_t error_msg_len) {
+  // The indexed vector is the single key column at position 0; its column
+  // store holds, per value, the owning row's clustered field-0 bytes as
+  // rowid_prefix (see Custom_column insert_impl).
+  const dict_col_t *col = index->get_field(0)->col;
+  if (col->custom_column == nullptr || !col->stored_by_extn()) {
+    snprintf(error_msg, error_msg_len,
+             "col_ref_to_rowid: indexed column is not externally stored");
+    return true;
+  }
+
+  auto &custom_column = col->custom_column;
+  if (custom_column->storage_ctx() == nullptr) {
+    snprintf(error_msg, error_msg_len,
+             "col_ref_to_rowid: uninitialized custom column store");
+    return true;
+  }
+
+  const auto &intf = custom_column->storage_interface();
+  if (!intf) {
+    snprintf(error_msg, error_msg_len,
+             "col_ref_to_rowid: custom column store has no interface");
+    return true;
+  }
+
+  Custom_column::Data data{};
+  Custom_column::Data rowid_prefix{};
+  Custom_column::TrxRef trx_ref = 0;
+  bool deleted = false;
+
+  mtr_t mtr;
+  mtr_start(&mtr);
+  bool failed =
+      intf->select(custom_column->storage_ctx(), &mtr, key_ref, &data,
+                   &rowid_prefix, &trx_ref, &deleted, error_msg, error_msg_len);
+  if (failed || rowid_prefix.data == nullptr || rowid_prefix.length == 0) {
+    mtr_commit(&mtr);
+    if (!failed) {
+      snprintf(error_msg, error_msg_len,
+               "col_ref_to_rowid: column store returned no rowid_prefix");
+    }
+    return true;
+  }
+  if (rowid_prefix.length > out_cap) {
+    mtr_commit(&mtr);
+    snprintf(error_msg, error_msg_len,
+             "col_ref_to_rowid: rowid_prefix (%u) exceeds buffer (%u)",
+             rowid_prefix.length, out_cap);
+    return true;
+  }
+
+  // Copy out of the page before the latch is released on commit.
+  memcpy(out, rowid_prefix.data, rowid_prefix.length);
+  *out_len = rowid_prefix.length;
+  mtr_commit(&mtr);
+  return false;
+}
+
 static dberr_t init_index_ctx(dict_index_t *index) {
   vef_index_ctx_t *ctx = index->custom_index->index_ctx();
   ctx->version = VEF_INDEX_TYPE_INTF_VERSION;
@@ -357,6 +424,7 @@ static dberr_t init_index_ctx(dict_index_t *index) {
   ctx->helper_fn = vef_index_helper_fn_impl;
   ctx->key_len_fn = vef_index_max_key_len_impl;
   ctx->options = nullptr;
+  ctx->helper_fn_name_fn = vef_index_helper_fn_name_impl;
 
   const auto &intf = index->custom_index->interface();
 
@@ -532,8 +600,9 @@ dberr_t Custom_index::create(dict_index_t *index, trx_id_t trx_id) {
 
   if (failed) {
     error_msg[sizeof(error_msg) - 1] = '\0';
-    ib::error(ER_VILLAGESQL_GENERIC_MESSAGE)
-        << "Error creating custom index storage: " << error_msg;
+    if (trx_t *trx = trx_rw_is_active(trx_id, false)) {
+      trx_set_detailed_error(trx, error_msg);
+    }
     return DB_VILLAGESQL_ERROR;
   }
 
@@ -555,8 +624,9 @@ dberr_t Custom_index::drop(dict_index_t *index, trx_id_t trx_id) {
 
   if (failed) {
     error_msg[sizeof(error_msg) - 1] = '\0';
-    ib::error(ER_VILLAGESQL_GENERIC_MESSAGE)
-        << "Error dropping custom index storage: " << error_msg;
+    if (trx_t *trx = trx_rw_is_active(trx_id, false)) {
+      trx_set_detailed_error(trx, error_msg);
+    }
     return DB_VILLAGESQL_ERROR;
   }
   return DB_SUCCESS;

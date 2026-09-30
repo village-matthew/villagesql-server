@@ -23,6 +23,7 @@ name: TSan Tests
 # Results are posted to Slack; see the notify job at the bottom.
 #
 # Trigger via: Actions tab -> Run workflow, or `gh workflow run tsan.yml`.
+# nightly-dispatch.yml starts one run this way after every nightly build.
 
 on:
   workflow_dispatch:
@@ -54,6 +55,10 @@ on:
         description: 'Limit the extension phase to one extension (e.g. vsql-vector); empty for all'
         required: false
         default: ''
+      max-parallel:
+        description: 'Cap on mysql-test-run workers (each one runs a TSan-instrumented mysqld)'
+        required: false
+        default: '16'
       slack_notify:
         description: 'Send Slack notification with results'
         required: false
@@ -102,6 +107,11 @@ jobs:
       # instrumented server.
       SAN_CFLAGS: -fsanitize=thread -fno-omit-frame-pointer
       SAN_LDFLAGS: -fsanitize=thread
+      # --parallel=auto resolves to the runner's CPU count; mysql-test-run caps
+      # it at MTR_MAX_PARALLEL, and test_extension_vebs.sh honors the same cap.
+      # A TSan mysqld holds several times its usual RSS, so letting auto take
+      # every core gets servers OOM-killed during the startup burst.
+      MTR_MAX_PARALLEL: ${{ inputs.max-parallel }}
 
     steps:
     - name: Report Parameters
@@ -202,6 +212,8 @@ jobs:
       continue-on-error: true
       env:
         MTR_EXTRA_FLAGS: --sanitize
+        # Matches the server phase, which uses MTR's default.
+        MTR_RETRY: 3
       run: |
         source/villagesql/bld_tools/test_extension_vebs.sh \
           "$BUILD_DIR" "$EXTS_ROOT/sources"
@@ -216,6 +228,34 @@ jobs:
           ${{ env.BUILD_DIR }}/mysql-test/var/*/log/
         if-no-files-found: warn
         retention-days: 7
+
+    # TSan does not symbolize frames in dlopen'd plugins: it reports
+    # <module>.so+0xoffset with no name, though addr2line resolves the same
+    # offsets. Resolve them here, while the modules are still on disk.
+    - name: Symbolize plugin frames
+      if: always()
+      run: |
+        VAR="$BUILD_DIR/mysql-test/var"
+        PLUGINS="$BUILD_DIR/plugin_output_directory"
+        [ -d "$VAR" ] || exit 0
+
+        grep -rhoE "[a-z_0-9]+\\.so\\+0x[0-9a-f]+" "$VAR" 2>/dev/null \
+          | sort -u > /tmp/frames.txt || true
+        if [ ! -s /tmp/frames.txt ]; then
+          echo "no unsymbolized plugin frames"
+          exit 0
+        fi
+
+        cut -d+ -f1 /tmp/frames.txt | sort -u | while read -r mod; do
+          SO="$PLUGINS/$mod"
+          [ -f "$SO" ] || continue
+          echo "=== $mod ==="
+          grep -F "$mod+" /tmp/frames.txt | sed 's/.*+//' | sort -u \
+            | while read -r off; do
+                printf '%s -> ' "$off"
+                addr2line -Cfe "$SO" "$off" | paste -sd' | ' -
+              done
+        done
 
     - name: Fail if any TSan phase failed
       if: always()

@@ -14,6 +14,7 @@ This is VillageSQL Server, a fork of MySQL 8.4.6 LTS that adds VillageSQL Extens
 - [Adding SQL Commands](Docs/ADDING_SQL_COMMANDS.md) - Complete checklist for adding new SQL commands to the parser
 - [Adding System Tables](villagesql/schema/ADDING_SYSTEM_TABLES.md) - Guide for adding new VillageSQL system tables to victionary
 - [Error Handling](Docs/ERROR_HANDLING.md) - strategies for handling errors in VillageSQL and the boundary with MySQL
+- [Writing MTR Tests](Docs/WRITING_MTR_TESTS.md) - Conventions for VillageSQL mysql-test suites, e.g. the shared `include/villagesql/` helpers, how to mark a test that cannot pass yet, and stopping/restarting the server
 - [CI Build Cache](.github/CI_BUILD_CACHE.md) - How CI build caching works, known issues, and diagnostics
 - [VEF SDK Overview](villagesql/sdk/README.md) - The extension SDK, protocol versions, and how to stabilize a protocol
 - [VEF API vs ABI](villagesql/sdk/API_ABI.md) - The API/ABI distinction and the rules for evolving each compatibly
@@ -78,10 +79,10 @@ cd $BUILD_HOME
 ./mysql-test/mysql-test-run.pl --parallel=auto
 
 # Run ALL VillageSQL tests including sub-suites (alter_table, create_table, etc.)
-./mysql-test/mysql-test-run.pl --do-suite=village --nounit-tests --parallel=auto
+./mysql-test/mysql-test-run.pl --do-suite=villagesql --nounit-tests --parallel=auto
 
 # Run VillageSQL tests including "big" tests (longer running)
-./mysql-test/mysql-test-run.pl --do-suite=village --nounit-tests  --parallel=auto --big-test
+./mysql-test/mysql-test-run.pl --do-suite=villagesql --nounit-tests  --parallel=auto --big-test
 
 # Run specific VillageSQL sub-suite
 ./mysql-test/mysql-test-run.pl --suite=villagesql/alter_table --parallel=auto

@@ -171,6 +171,21 @@ bool load_vef_extension(const villagesql::services::PopulateContext &ctx,
 void unload_vef_extension(const villagesql::services::DepopulateContext &ctx,
                           const ExtensionRegistration &registration);
 
+// Call the extension's own load / unload hooks (the builder's on_init() and
+// on_deinit()). Both are no-ops for an extension that declares no hook or was
+// built before the hooks existed.
+//
+// on_init runs after the extension's capabilities are populated and on_deinit
+// before they are depopulated, so an extension sees the same live capabilities
+// in both. load_vef_extension and unload_vef_extension already call these; the
+// shutdown path calls run_extension_on_deinit directly because it depopulates
+// capabilities and unloads the .so in two separate phases.
+//
+// The pair is symmetric: the unload hook runs only for a registration that
+// reached the load hook, and each call runs at most once per load.
+void run_extension_on_init(const vef_registration_t *reg);
+void run_extension_on_deinit(const vef_registration_t *reg);
+
 // Open the .so and call vef_register: dlopen, look up the entry-point
 // symbols, invoke vef_register, validate the returned protocol. Does NOT
 // run any capability populate hooks. The caller observes only what the
@@ -188,6 +203,40 @@ void unload_vef_extension(const villagesql::services::DepopulateContext &ctx,
 bool open_vef_extension(const std::string &so_path, vef_protocol_t max_protocol,
                         ExtensionRegistration &registration,
                         std::string &error_message);
+
+// Checks the registration returned by vef_register against the invariants
+// every consumer of it relies on, so that each one is stated and enforced
+// once here rather than rediscovered (or forgotten) downstream:
+//
+//   - funcs[] and types[] hold exactly func_count/type_count non-NULL
+//     descriptors. Consumers walk these arrays on the count alone --
+//     parse_extension_registration(), RunUpdatePreCheck() and the
+//     extension_registration system view.
+//   - every function descriptor is callable and describable: it has a name,
+//     a vdf pointer, a signature, a params array matching its param_count,
+//     and a named type wherever it declares VEF_TYPE_CUSTOM. validate.cc
+//     dereferences signature unconditionally, vdf_handler calls vdf with no
+//     NULL check, and the CUSTOM type name is otherwise only guarded by a
+//     debug assert in types/util.cc.
+//   - every type descriptor has a name and a positive
+//     max_decode_buffer_length. RunUpdatePreCheck reads the name to decide
+//     which types a target version keeps, and TypeDecoder allocates the
+//     buffer size.
+//
+// Only protocol-1 fields are read, so this applies to every extension
+// regardless of the protocol it declares.
+//
+// This is what a registration must *be*, not what a server will accept from
+// it: semantic rules (identifier legality, aggregate callback pairing,
+// duplicate names, buffer lengths) stay in parse_extension_registration(),
+// which has the extension name and protocol context to report them well.
+//
+// Called by open_vef_extension(); exposed for unit testing.
+//
+// Returns false when the registration is well formed, true on error (a
+// message is written to error_message).
+bool check_vef_registration(const vef_registration_t *registration,
+                            std::string &error_message);
 
 // Symmetric counterpart to open_vef_extension: vef_unregister + dlclose, no
 // capability depopulate. Pair with open_vef_extension. Calling this on a
