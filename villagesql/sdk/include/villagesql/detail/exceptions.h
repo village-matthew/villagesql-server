@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program; if not, see <https://www.gnu.org/licenses/>.
 
-#ifndef VILLAGESQL_SDK_EXCEPTIONS_H
+#ifndef VILLAGESQL_DETAIL_EXCEPTIONS_H
 #define VILLAGESQL_DETAIL_EXCEPTIONS_H
 
 // NOTE: The following two macros are "decorated" when used to
@@ -45,4 +45,4 @@
     }                                                       \
   }
 
-#endif  // VILLAGESQL_SDK_EXCEPTIONS_H
+#endif  // VILLAGESQL_DETAIL_EXCEPTIONS_H
