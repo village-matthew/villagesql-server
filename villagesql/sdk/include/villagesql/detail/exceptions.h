@@ -14,20 +14,20 @@
 // along with this program; if not, see <https://www.gnu.org/licenses/>.
 
 #ifndef VILLAGESQL_SDK_EXCEPTIONS_H
-#define VILLAGESQL_SDK_EXCEPTIONS_H
+#define VILLAGESQL_DETAIL_EXCEPTIONS_H
 
 // NOTE: The following two macros are "decorated" when used to
-//       emphasize variable scoping.  The TRY macro is followed
-//       " {".  The CATCH macro is preceded by "} " and followed
-//       ";".  All of the decorations are redundant.  Again,
-//       the purpose is to highlight variable scoping between.
+// emphasize variable scoping.  The TRY macro is followed
+// " {".  The CATCH macro is preceded by "} " and followed
+// ";".  All of the decorations are redundant.  Again,
+// the purpose is to highlight variable scoping between.
 
 #define VDF_EXCEPTIONS_TRY try {
 // TODO(villagesql-general): need a way to log these errors
 #define VDF_EXCEPTIONS_CATCH(result__)                      \
   }                                                         \
   catch (const std::exception &ex) {                        \
-    if (VEF_PROTOCOL_3 < ctx->protocol) {                   \
+    if (VEF_PROTOCOL_4 <= ctx->protocol) {                  \
       (result__)->type = VEF_RESULT_ERROR;                  \
       if (nullptr != (result__)->error_msg) {               \
         snprintf((result__)->error_msg, VEF_MAX_ERROR_LEN,  \
@@ -36,7 +36,7 @@
     }                                                       \
   }                                                         \
   catch (...) {                                             \
-    if (VEF_PROTOCOL_3 < ctx->protocol) {                   \
+    if (VEF_PROTOCOL_4 <= ctx->protocol) {                  \
       (result__)->type = VEF_RESULT_ERROR;                  \
       if (nullptr != (result__)->error_msg) {               \
         snprintf((result__)->error_msg, VEF_MAX_ERROR_LEN,  \

@@ -388,10 +388,11 @@ struct AggAccumulateWrapper {
 // Wraps void(const State&, ResultWrapper) -> vef_vdf_func_t
 template <typename State, typename ResultWrapper, auto Func>
 struct AggResultWithOutputWrapper {
-  static void invoke(vef_context_t *, vef_vdf_args_t *args,
+  static void invoke(vef_context_t *ctx, vef_vdf_args_t *args,
                      vef_vdf_result_t *result) {
     const auto &state = *static_cast<const State *>(args->user_data);
-    Func(state, ResultWrapper(result));
+    VDF_EXCEPTIONS_TRY { Func(state, ResultWrapper(result)); }
+    VDF_EXCEPTIONS_CATCH(result);
   }
 };
 
@@ -1026,39 +1027,43 @@ template <IntToTypeParamsFunc Func>
 struct IntToParamsWrapper {
   static void invoke(vef_context_t *ctx, vef_vdf_args_t *args,
                      vef_vdf_result_t *result) {
-    VDF_EXCEPTIONS_TRY {
-      vef_invalue_t arg = get_invalue(ctx, args, 0);
-
-      if (arg.is_null) {
-        result->type = VEF_RESULT_NULL;
-        return;
-      }
-
-      std::map<std::string, std::string> params;
-      if (Func(arg.int_value, params, result->error_msg)) {
-        result->type = VEF_RESULT_ERROR;
-        return;
-      }
-
-      std::string serialized;
-      if (serialize_type_params(params, "int_to_params", serialized,
-                                result->error_msg)) {
-        result->type = VEF_RESULT_ERROR;
-        return;
-      }
-
-      if (serialized.size() > result->max_str_len) {
-        result->type = VEF_RESULT_ERROR;
-        snprintf(result->error_msg, VEF_MAX_ERROR_LEN,
-                 "int_to_params result too large for buffer");
-        return;
-      }
-
-      memcpy(result->str_buf, serialized.data(), serialized.size());
-      result->type = VEF_RESULT_VALUE;
-      result->actual_len = serialized.size();
-    }
+    VDF_EXCEPTIONS_TRY { invoke_impl(ctx, args, result); }
     VDF_EXCEPTIONS_CATCH(result);
+  }
+
+ private:
+  static void invoke_impl(vef_context_t *ctx, vef_vdf_args_t *args,
+                          vef_vdf_result_t *result) {
+    vef_invalue_t arg = get_invalue(ctx, args, 0);
+
+    if (arg.is_null) {
+      result->type = VEF_RESULT_NULL;
+      return;
+    }
+
+    std::map<std::string, std::string> params;
+    if (Func(arg.int_value, params, result->error_msg)) {
+      result->type = VEF_RESULT_ERROR;
+      return;
+    }
+
+    std::string serialized;
+    if (serialize_type_params(params, "int_to_params", serialized,
+                              result->error_msg)) {
+      result->type = VEF_RESULT_ERROR;
+      return;
+    }
+
+    if (serialized.size() > result->max_str_len) {
+      result->type = VEF_RESULT_ERROR;
+      snprintf(result->error_msg, VEF_MAX_ERROR_LEN,
+               "int_to_params result too large for buffer");
+      return;
+    }
+
+    memcpy(result->str_buf, serialized.data(), serialized.size());
+    result->type = VEF_RESULT_VALUE;
+    result->actual_len = serialized.size();
   }
 };
 
@@ -1077,61 +1082,65 @@ struct ResolveParamsWrapper {
 
   static void invoke(vef_context_t *ctx, vef_vdf_args_t *args,
                      vef_vdf_result_t *result) {
-    VDF_EXCEPTIONS_TRY {
-      vef_invalue_t arg = get_invalue(ctx, args, 0);
+    VDF_EXCEPTIONS_TRY { invoke_impl(ctx, args, result); }
+    VDF_EXCEPTIONS_CATCH(result);
+  }
 
-      if (arg.is_null) {
-        result->type = VEF_RESULT_NULL;
-        return;
-      }
+ private:
+  static void invoke_impl(vef_context_t *ctx, vef_vdf_args_t *args,
+                          vef_vdf_result_t *result) {
+    vef_invalue_t arg = get_invalue(ctx, args, 0);
 
-      std::string_view input(arg.str_value, arg.str_len);
-      std::map<std::string, std::string> params;
-      size_t start = 0;
-      while (start < input.size()) {
-        size_t comma = input.find(',', start);
-        if (comma == std::string_view::npos) comma = input.size();
-        size_t eq = input.find('=', start);
-        if (eq == std::string_view::npos || eq >= comma) {
-          result->type = VEF_RESULT_ERROR;
-          snprintf(result->error_msg, VEF_MAX_ERROR_LEN,
-                   "resolve_params: invalid input format");
-          return;
-        }
-        params.emplace(input.substr(start, eq - start),
-                       input.substr(eq + 1, comma - eq - 1));
-        start = comma + 1;
-      }
+    if (arg.is_null) {
+      result->type = VEF_RESULT_NULL;
+      return;
+    }
 
-      vsql::ResolvedTypeParams resolved = {};
-      if (Func(params, &resolved, result->error_msg)) {
-        result->type = VEF_RESULT_ERROR;
-        return;
-      }
-
-      int written = snprintf(result->str_buf, result->max_str_len,
-                             "%" PRId64 ",%" PRId64, resolved.persisted_length,
-                             resolved.max_decode_buffer_length);
-      if (written < 0 || static_cast<size_t>(written) >= result->max_str_len) {
+    std::string_view input(arg.str_value, arg.str_len);
+    std::map<std::string, std::string> params;
+    size_t start = 0;
+    while (start < input.size()) {
+      size_t comma = input.find(',', start);
+      if (comma == std::string_view::npos) comma = input.size();
+      size_t eq = input.find('=', start);
+      if (eq == std::string_view::npos || eq >= comma) {
         result->type = VEF_RESULT_ERROR;
         snprintf(result->error_msg, VEF_MAX_ERROR_LEN,
-                 "resolve_params result too large for buffer");
+                 "resolve_params: invalid input format");
         return;
       }
-      result->actual_len = static_cast<size_t>(written);
-
-      // The mutating overload may have rewritten params; append them so the
-      // server adopts the rewritten set as canonical.
-      if constexpr (is_mutable) {
-        if (add_mutated_params(params, result)) {
-          result->type = VEF_RESULT_ERROR;
-          return;
-        }
-      }
-
-      result->type = VEF_RESULT_VALUE;
+      params.emplace(input.substr(start, eq - start),
+                     input.substr(eq + 1, comma - eq - 1));
+      start = comma + 1;
     }
-    VDF_EXCEPTIONS_CATCH(result);
+
+    vsql::ResolvedTypeParams resolved = {};
+    if (Func(params, &resolved, result->error_msg)) {
+      result->type = VEF_RESULT_ERROR;
+      return;
+    }
+
+    int written =
+        snprintf(result->str_buf, result->max_str_len, "%" PRId64 ",%" PRId64,
+                 resolved.persisted_length, resolved.max_decode_buffer_length);
+    if (written < 0 || static_cast<size_t>(written) >= result->max_str_len) {
+      result->type = VEF_RESULT_ERROR;
+      snprintf(result->error_msg, VEF_MAX_ERROR_LEN,
+               "resolve_params result too large for buffer");
+      return;
+    }
+    result->actual_len = static_cast<size_t>(written);
+
+    // The mutating overload may have rewritten params; append them so the
+    // server adopts the rewritten set as canonical.
+    if constexpr (is_mutable) {
+      if (add_mutated_params(params, result)) {
+        result->type = VEF_RESULT_ERROR;
+        return;
+      }
+    }
+
+    result->type = VEF_RESULT_VALUE;
   }
 };
 

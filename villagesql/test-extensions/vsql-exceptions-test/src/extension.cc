@@ -20,23 +20,19 @@
 
 using namespace vsql;
 
-//
 // Exception in simple INT function
-//
 void exception_add(IntArg, IntArg, IntResult) {
   throw std::runtime_error("vsql_exceptions_test::exception_add");
 }
 
-//
 // Exception in accumulater of function
-//
 struct ExAccState {
   std::optional<long long> val;
 
   static void clear(ExAccState &s) { s.val = std::nullopt; }
   static void acc(ExAccState &s, IntArg v) {
     if (!v.is_null()) s.val = s.val.value_or(0) + v.value();
-    if (3 < s.val.value_or(0)) {
+    if (s.val.value_or(0) > 3) {
       throw std::bad_optional_access();
     }
   }
@@ -49,9 +45,8 @@ struct ExAccState {
     out.set(s.val.value());
   }
 };
-//
+
 // Exception in accumulator clear
-//
 struct ExClearState {
   std::optional<long long> accum;
 
@@ -70,9 +65,7 @@ struct ExClearState {
   }
 };
 
-//
 // Exception in accumulater constuctor
-//
 struct ExConstrState {
   std::optional<long long> accum;
 
@@ -94,9 +87,7 @@ struct ExConstrState {
   }
 };
 
-//
 // Exception in accumulater destructor
-//
 struct ExDestructrState {
   std::optional<long long> accum;
 
