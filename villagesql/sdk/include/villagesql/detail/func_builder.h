@@ -343,6 +343,9 @@ struct TypeOpParamsType<size_t (*)(CustomArgWith<P>)> {
   using type = P;
 };
 
+// TODO(villagesql-general): clear function does not return error
+//  should be: typedef void (*vef_vdf_clear_func_w_return_t)
+//  (vef_context_t *ctx, vef_vdf_args_t *args, vef_vdf_result_t *result);
 // Wraps void(State&) -> vef_vdf_clear_func_t
 template <typename State, auto Func>
 void agg_clear_wrapper(vef_context_t *ctx, vef_vdf_args_t *args) {
