@@ -133,9 +133,8 @@ void fault_blob_encode(std::string_view from, vsql::CustomResult out) {
   }
 
   auto buf = out.buffer();
-  if (from.substr(0, kPrefixOk.size()) == kPrefixOk
-      || from == kDecodeFail || from == kDecodeThrow
-      || from == kCompareThrow || from == kHashThrow) {
+  if (from.substr(0, kPrefixOk.size()) == kPrefixOk || from == kDecodeFail ||
+      from == kDecodeThrow || from == kCompareThrow || from == kHashThrow) {
     if (from.size() > buf.size()) return;  // input too long
     memset(buf.data(), 0, buf.size());
     memcpy(buf.data(), from.data(), from.size());
@@ -191,13 +190,13 @@ int fault_blob_compare(vsql::CustomArg a, vsql::CustomArg b) {
   auto va = a.value();
   auto vb = b.value();
 
-  if (kCompareThrow.size() <= va.size()
-      && 0 == memcmp(va.data(), kCompareThrow.data(), kCompareThrow.size())) {
+  if (kCompareThrow.size() <= va.size() &&
+      0 == memcmp(va.data(), kCompareThrow.data(), kCompareThrow.size())) {
     throw std::runtime_error("fault_blob_compare throw");
   }
 
-  if (kCompareThrow.size() <= vb.size()
-      && 0 == memcmp(vb.data(), kCompareThrow.data(), kCompareThrow.size())) {
+  if (kCompareThrow.size() <= vb.size() &&
+      0 == memcmp(vb.data(), kCompareThrow.data(), kCompareThrow.size())) {
     throw std::runtime_error("fault_blob_compare throw");
   }
 
@@ -212,13 +211,12 @@ int fault_blob_compare(vsql::CustomArg a, vsql::CustomArg b) {
 // not a real hash, but sufficient for throw test
 size_t fault_blob_hash(vsql::CustomArg in) {
   auto va = in.value();
-  if (kHashThrow.size() <= va.size()
-      && 0 == memcmp(va.data(), kHashThrow.data(), kHashThrow.size())) {
+  if (kHashThrow.size() <= va.size() &&
+      0 == memcmp(va.data(), kHashThrow.data(), kHashThrow.size())) {
     throw std::runtime_error("fault_blob_hash throw");
   }
 
   return static_cast<size_t>(*va.data());
-
 }
 
 constexpr int64_t kNoDefaultSize = 4;
