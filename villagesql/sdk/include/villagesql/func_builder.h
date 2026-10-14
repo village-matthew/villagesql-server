@@ -178,7 +178,7 @@ struct FromStringWrapper {
     }
 
     size_t length;
-    bool failed{true};
+    bool failed=true;
 
     VDF_EXCEPTIONS_TRY {
       failed = Func(result->bin_buf, result->max_bin_len, arg.str_value,
