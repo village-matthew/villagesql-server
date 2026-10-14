@@ -1,7 +1,8 @@
 # Print decode-failure log entries written since the last call to
 # decode_failure_log_init.inc or this file, then advance the saved position.
-# Matches lines containing "Invalid value in column" or
-# "Extension error decoding column", stripping the timestamp/thread prefix.
+# Matches lines containing "Invalid value in column",
+# "Extension error decoding column", or "VDF threw an exception" stripping
+# the timestamp/thread prefix.
 #
 # Usage:
 #   --source include/villagesql/decode_failure_log_init.inc
@@ -17,8 +18,8 @@ my $pos = <$pf>; chomp $pos; close $pf;
 open(my $fh, "<", $log) or die "Cannot open $log: $!";
 seek($fh, $pos, 0);
 while (my $line = <$fh>) {
-  next unless $line =~ /Invalid value in column|Extension error decoding column/;
-  $line =~ s/^\S+\s+\d+\s+\[Warning\]\s+\[MY-\d+\]\s+\[Server\]\s+//;
+  next unless $line =~ /Invalid value in column|Extension error decoding column|VDF threw an exception/;
+  $line =~ s/^\S+\s+\d+\s+\[(Warning|ERROR)\]\s+\[MY-\d+\]\s+\[Server\]\s+//;
   print $line;
 }
 my $new_pos = tell($fh); close $fh;
