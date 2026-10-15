@@ -70,7 +70,6 @@ sum(id)	val
 2	OK world
 # Verify the failure was logged (two ERRORs)
 VillageSQL: hash VDF 'FAULT_BLOB::hash' returned error: VDF threw an exception (fault_blob_hash throw)
-VillageSQL: hash VDF 'FAULT_BLOB::hash' returned error: VDF threw an exception (fault_blob_hash throw)
 # Insert a value that will throw on compare
 INSERT INTO t1 VALUES (7, 'COMPARE_THROW');
 SELECT id, val FROM t1 ORDER BY val;
@@ -82,7 +81,6 @@ id	val
 1	OK hello
 2	OK world
 7	COMPARE_THROW
-VillageSQL: compare VDF 'FAULT_BLOB::compare' returned error: VDF threw an exception (fault_blob_compare throw)
 VillageSQL: compare VDF 'FAULT_BLOB::compare' returned error: VDF threw an exception (fault_blob_compare throw)
 # UPDATE: overwrite a good row with a DECODE_FAIL value
 UPDATE t1 SET val = 'DECODE_FAIL' WHERE id = 1;

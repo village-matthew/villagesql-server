@@ -95,20 +95,14 @@ SELECT sum(id), val FROM t1 GROUP BY val ORDER BY val;
 
 --echo # Verify the failure was logged (two ERRORs)
 --source include/villagesql/decode_failure_log_print.inc
---source include/villagesql/decode_failure_log_print.inc
 
 --echo # Insert a value that will throw on compare
 INSERT INTO t1 VALUES (7, 'COMPARE_THROW');
 
 # TODO(villagesql-general): no error reported to client
-#--error ER_VILLAGESQL_GENERIC_ERROR
-#--error ER_NDB_CONFLICT_GENERIC_MESSAGE
-#--error MY-010666
 SELECT id, val FROM t1 ORDER BY val;
 
 # TODO(villagesql-general): three log lines written, need test
---source include/villagesql/decode_failure_log_print.inc
---source include/villagesql/decode_failure_log_print.inc
 --source include/villagesql/decode_failure_log_print.inc
 
 --echo # UPDATE: overwrite a good row with a DECODE_FAIL value
