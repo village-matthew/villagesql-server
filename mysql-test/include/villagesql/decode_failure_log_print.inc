@@ -17,10 +17,14 @@ open(my $pf, "<", $pos_file) or die "Cannot open $pos_file: $!";
 my $pos = <$pf>; chomp $pos; close $pf;
 open(my $fh, "<", $log) or die "Cannot open $log: $!";
 seek($fh, $pos, 0);
+my $prev = "";
 while (my $line = <$fh>) {
   next unless $line =~ /Invalid value in column|Extension error decoding column|VDF threw an exception/;
   $line =~ s/^\S+\s+\d+\s+\[(Warning|ERROR)\]\s+\[MY-\d+\]\s+\[Server\]\s+//;
-  print $line;
+  if ($prev ne $line) {
+    print $line;
+  }
+  $prev = $line;
 }
 my $new_pos = tell($fh); close $fh;
 open($pf, ">", $pos_file) or die "Cannot write $pos_file: $!";
