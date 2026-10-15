@@ -68,6 +68,7 @@ SELECT id, val FROM t1 WHERE id = 4;
 SELECT id, val FROM t1 WHERE id = 5;
 
 --echo # Verify the failure was logged
+--replace_result fault_blob_decode "fault blob decode"
 --source include/villagesql/decode_failure_log_print.inc
 
 --echo # UPDATE: overwrite the DECODE_THROW row with a good value
@@ -94,6 +95,7 @@ INSERT INTO t1 VALUES (6, 'HASH_THROW');
 SELECT sum(id), val FROM t1 GROUP BY val ORDER BY val;
 
 --echo # Verify the failure was logged (two ERRORs)
+--replace_result fault_blob_hash "fault blob hash"
 --source include/villagesql/decode_failure_log_print.inc
 
 --echo # Insert a value that will throw on compare
@@ -103,6 +105,7 @@ INSERT INTO t1 VALUES (7, 'COMPARE_THROW');
 SELECT id, val FROM t1 ORDER BY val;
 
 # TODO(villagesql-general): three log lines written, need test
+--replace_result fault_blob_compare "fault blob compare"
 --source include/villagesql/decode_failure_log_print.inc
 
 --echo # UPDATE: overwrite a good row with a DECODE_FAIL value
