@@ -1092,9 +1092,19 @@ void bad_default_len_encode(std::string_view from, vsql::CustomResult out) {
 
 // intrinsic_default VDF for DEFAULT_VDF_TYPE: computes the text form "(9)".
 std::string default_vdf_default(char * /*error_msg*/) { return "(9)"; }
+std::string default_vdf_err_default(char * error_msg) {
+  strcpy(error_msg, "default_vdf_err_default error");
+  return std::string();
+}
+std::string default_vdf_throw_default(char * /*error_msg*/) {
+  throw std::runtime_error("default_vdf_throw_default throw");
+  return std::string();
+}
 
 static constexpr const char kDefaultStrTypeName[] = "DEFAULT_STR_TYPE";
 static constexpr const char kDefaultVdfTypeName[] = "DEFAULT_VDF_TYPE";
+static constexpr const char kDefaultVdfErrTypeName[] = "DEFAULT_VDF_ERR_TYPE";
+static constexpr const char kDefaultVdfThrowTypeName[] = "DEFAULT_VDF_THROW_TYPE";
 static constexpr const char kDefaultParamTypeName[] = "DEFAULT_PARAM_TYPE";
 static constexpr const char kBadDefaultLenTypeName[] = "BAD_DEFAULT_LEN_TYPE";
 
@@ -1115,6 +1125,26 @@ constexpr auto DEFAULT_VDF_TYPE =
         .to_string<&default_test_decode>()
         .compare<&default_test_compare>()
         .intrinsic_default_vdf("default_vdf_type_default")
+        .build();
+
+constexpr auto DEFAULT_VDF_ERR_TYPE =
+    vsql::make_type<kDefaultVdfErrTypeName>()
+        .persisted_length(kDefaultTestSize)
+        .max_decode_buffer_length(16)
+        .from_string<&default_test_encode>()
+        .to_string<&default_test_decode>()
+        .compare<&default_test_compare>()
+        .intrinsic_default_vdf("default_vdf_err_type_default")
+        .build();
+
+constexpr auto DEFAULT_VDF_THROW_TYPE =
+    vsql::make_type<kDefaultVdfThrowTypeName>()
+        .persisted_length(kDefaultTestSize)
+        .max_decode_buffer_length(16)
+        .from_string<&default_test_encode>()
+        .to_string<&default_test_decode>()
+        .compare<&default_test_compare>()
+        .intrinsic_default_vdf("default_vdf_throw_type_default")
         .build();
 
 constexpr auto DEFAULT_PARAM_TYPE =
@@ -1395,6 +1425,8 @@ VEF_GENERATE_ENTRY_POINTS(
         // Intrinsic-default test types
         .type(DEFAULT_STR_TYPE)
         .type(DEFAULT_VDF_TYPE)
+        .type(DEFAULT_VDF_ERR_TYPE)
+        .type(DEFAULT_VDF_THROW_TYPE)
         .type(DEFAULT_PARAM_TYPE)
         .type(BAD_DEFAULT_LEN_TYPE)
         // Parameter-bound and rewrite test types
@@ -1407,6 +1439,10 @@ VEF_GENERATE_ENTRY_POINTS(
         .type(BAD_DECODE_BUF)
         .func(make_intrinsic_default<&default_vdf_default>(
             "default_vdf_type_default"))
+        .func(make_intrinsic_default<&default_vdf_err_default>(
+            "default_vdf_err_type_default"))
+        .func(make_intrinsic_default<&default_vdf_throw_default>(
+            "default_vdf_throw_type_default"))
         // Test VDF: exercises VEF_RESULT_WARNING vs VEF_RESULT_ERROR
         .func(make_func<&test_result_kind>("test_result_kind")
                   .returns(INT)
