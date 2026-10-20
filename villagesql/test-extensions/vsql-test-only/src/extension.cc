@@ -811,12 +811,21 @@ struct LenParam {
 
   static LenParam parse(const std::map<std::string, std::string> &params) {
     auto it = params.find("length");
-    return LenParam{
+    LenParam lp{
         it == params.end() ? 0 : std::strtoll(it->second.c_str(), nullptr, 0)};
+    if (100 == lp.length) {
+      throw std::runtime_error("LenParam.length throw");
+    }
+
+    return lp;
   }
 
   static void to_strings(const LenParam &p,
                          std::map<std::string, std::string> &out) {
+    // TODO(villagesql-general): this test is not being tickled
+    if (20 == p.length) {
+      throw std::runtime_error("LenParam.to_strings throw");
+    }
     out["length"] = std::to_string(p.length);
   }
 };
@@ -915,13 +924,18 @@ bool lenient_resolve_params(const std::map<std::string, std::string> &params,
 bool strict_int_to_params(int64_t value,
                           std::map<std::string, std::string> &params, char *) {
   params["length"] = std::to_string(value);
+  if (86 == value) {
+    throw std::runtime_error("strict_int_to_params throw");
+  }
   return false;
 }
 
 bool strict_resolve_params(const std::map<std::string, std::string> &params,
                            vsql::ResolvedTypeParams *result, char *error_msg) {
   for (const auto &kv : params) {
-    if (kv.first != "length") {
+    if (kv.first == "throw") {
+      throw std::runtime_error("strict_resolve_params throw");
+    } else if (kv.first != "length") {
       snprintf(error_msg, VEF_MAX_ERROR_LEN,
                "STRICT_PARAM_TYPE: unknown parameter '%s'", kv.first.c_str());
       return true;
