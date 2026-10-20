@@ -143,7 +143,7 @@ void fault_blob_encode(std::string_view from, vsql::CustomResult out) {
   if (from == kEncodeThrow) {
     throw std::runtime_error("fault_blob_encode throw");
   }
-  
+
   if (from == kEncodeNull) {
     out.set_null();  // the value is SQL NULL, not a failure
     return;
@@ -850,7 +850,7 @@ struct LenParam {
     LenParam lp{
         it == params.end() ? 0 : std::strtoll(it->second.c_str(), nullptr, 0),
         pad == params.end() ? 0 : static_cast<int64_t>(pad->second.size())};
-      if (100 == lp.length) {
+    if (100 == lp.length) {
       throw std::runtime_error("LenParam.length throw");
     }
 
