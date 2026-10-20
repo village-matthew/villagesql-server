@@ -35,6 +35,8 @@
 class Alter_info;
 class Create_field;
 class Field;
+struct handlerton;
+struct HA_CREATE_INFO;
 class Item;
 class Item_func;
 enum class enum_sp_type;
@@ -126,14 +128,19 @@ extern bool AcquireOrCreateTypeContext(const TypeDescriptor *descriptor,
                                        MEM_ROOT &mem_root,
                                        const TypeContext *&result);
 
-// Pre-populate session-local temporary metadata from Create_field list so that
+// Verify that the storage engine is InnoDB; otherwise, report an error naming
+// the operation ("create table", "alter table").
+// Returns false on success and true on error.
+extern bool EnsureEngineIsInnodb(const handlerton *hton, const char *operation);
+
+// Pre-populate session-local temporary metadata from the create list so that
 // MaybeInjectCustomType can inject type contexts during open_table_from_share
 // (which calls unpack_value_generator before AnnotateCustomColumnsInTmpTable
 // runs). Must be called before open_table_uncached for temporary tables.
 // Returns true on error (e.g. extension uninstalled concurrently).
 extern bool PrepareTmpTableCustomColumns(THD *thd, const char *db,
                                          const char *table_name,
-                                         List<Create_field> &create_fields,
+                                         Alter_info *alter_info,
                                          const HA_CREATE_INFO *create_info);
 
 // Copy custom type contexts from Create_field list to corresponding Fields in
@@ -151,10 +158,10 @@ extern void RemoveTmpTableMetadata(THD *thd, const std::string &db,
 extern void RemoveTmpTableMetadata(THD *thd, TABLE *table);
 
 // Populate thd->villagesql_alter_custom_fields with pointers to custom-typed
-// Create_fields from create_list. Called from create_table_impl after
-// mysql_prepare_alter_table has finalized the create_list.
-extern void PrepareAlterCustomFields(THD *thd,
-                                     const List<Create_field> &create_list);
+// Create_fields from alter_info->create_list. Called from create_table_impl
+// after mysql_prepare_alter_table has finalized the create_list.
+extern bool PrepareAlterCustomFields(THD *thd, const Alter_info *alter_info,
+                                     const HA_CREATE_INFO *create_info);
 
 // Stash old_table's real (db, table) on the THD so MaybeInjectCustomIndex can
 // resolve the #sql-xxx rebuild table's custom indexes against the victionary
@@ -188,12 +195,30 @@ extern bool HandleCustomColumnsForTableRename(THD &thd, const char *old_db,
                                               const char *new_db,
                                               const char *new_table);
 
+// Why an encode for a custom type field produced no value. Only meaningful
+// when EncodeStringForField returned nullptr.
+enum class EncodeStatus {
+  // The encode called set_null(): store SQL NULL for this field.
+  kNull,
+  // The encode produced nothing usable, most often because the input did not
+  // parse as this type. Nothing is final: the caller decides whether this is
+  // an error, and reports it.
+  kBadValue,
+  // The encode called error(): the statement fails with the extension's own
+  // message, already raised. Propagate the failure without adding another.
+  kErrorRaised,
+  // Out of memory, already reported. Kept apart from kErrorRaised so callers
+  // can return TYPE_ERR_OOM for it alone.
+  kOom,
+};
+
 // Encodes a string for storage in a custom type field, with error reporting.
-// The TypeContext and field name are taken from the field itself. On error,
-// returns nullptr; if is_valid is false the value was invalid (warning
-// pushed), otherwise OOM.
+// The TypeContext and field name are taken from the field itself. Returns the
+// encoded String*, or nullptr with status saying why. On kBadValue a warning
+// has been pushed, so the caller only has to decide whether to promote it to
+// an error.
 extern String *EncodeStringForField(Field *field, const String &from,
-                                    bool &is_valid);
+                                    EncodeStatus &status);
 
 // Decode [data, data+len) for the given TypeContext without caching any state.
 // Use this for one-shot decodes outside the row-reading hot path (e.g. query
@@ -417,6 +442,10 @@ extern bool TryImplicitCastToCustom(Item *item, const TypeContext &tc);
 // Validates that incompatible custom types aren't used together
 // Returns false on success, true on error (with my_error already called)
 extern bool CheckCustomTypeUsage(Item *item, THD *thd);
+
+// The VEF type of a VDF argument: VEF_TYPE_CUSTOM when the Item carries a
+// TypeContext, otherwise derived from its SQL result type.
+extern vef_type_id InferArgTypeId(const Item *item);
 
 // Validate VDF arguments against function signature and convert string
 // constants to custom types where appropriate. Applies type disambiguation

@@ -20,6 +20,7 @@
 #include <cinttypes>
 #include <map>
 #include <optional>
+#include <span>
 
 #include "lex_string.h"
 #include "my_alloc.h"
@@ -38,8 +39,10 @@
 #include "sql/item_func.h"
 #include "sql/item_sum.h"
 #include "sql/key.h"
+#include "sql/key_spec.h"
 #include "sql/parse_tree_column_attrs.h"
 #include "sql/sp_pcontext.h"
+#include "sql/sql_alter.h"
 #include "sql/sql_class.h"
 #include "sql/sql_list.h"
 #include "sql/sql_show.h"  // append_identifier
@@ -650,44 +653,62 @@ static TypeEncoder *GetTypeEncoderFor(Item *item) {
   return encoder;
 }
 
-// Encode from for item's custom type. Returns the encoded String* on success.
-// On failure returns nullptr; is_valid=true means OOM (my_error already
-// called), is_valid=false means invalid value for the type.
-static String *EncodeForItem(Item *item, const String &from, bool &is_valid) {
+// Encode from for item's custom type. Returns the encoded String*, or nullptr
+// with status saying why.
+static String *EncodeForItem(Item *item, const String &from,
+                             EncodeStatus &status) {
   TypeEncoder *encoder = GetTypeEncoderFor(item);
   if (encoder == nullptr) {
-    is_valid = true;  // OOM, my_error already called
+    status = EncodeStatus::kOom;  // my_error already called
     return nullptr;
   }
-  return encoder->encode(from, is_valid);
+  EncodeOutcome outcome;
+  String *encoded = encoder->encode(from, outcome);
+  if (encoded == nullptr) status = EncodeStatus::kBadValue;
+  return encoded;
 }
 
-String *EncodeStringForField(Field *field, const String &from, bool &is_valid) {
+String *EncodeStringForField(Field *field, const String &from,
+                             EncodeStatus &status) {
   assert(field->has_type_context());
 
   TypeEncoder *encoder = GetTypeEncoderFor(field);
   if (encoder == nullptr) {
-    is_valid = true;  // OOM, my_error already called
+    status = EncodeStatus::kOom;  // my_error already called
     return nullptr;
   }
-  String *encoded = encoder->encode(from, is_valid);
-  if (encoded == nullptr) {
-    if (is_valid) return nullptr;  // OOM, my_error already called
-    // Encoding failed - invalid value for custom type
-    // Always push a warning (consistent with MySQL built-in types)
-    // Caller decides whether to also promote to error
-    const TypeContext *tc = field->get_type_context();
-    THD *thd = current_thd;
-    const ErrConvString errmsg(from.ptr(), from.length(), from.charset());
-    const Diagnostics_area *da = thd->get_stmt_da();
-    push_warning_printf(thd, Sql_condition::SL_WARNING,
-                        ER_TRUNCATED_WRONG_VALUE_FOR_FIELD,
-                        ER_THD(thd, ER_TRUNCATED_WRONG_VALUE_FOR_FIELD),
-                        tc->type_name().c_str(), errmsg.ptr(),
-                        field->field_name, da->current_row_for_condition());
+  EncodeOutcome outcome;
+  String *encoded = encoder->encode(from, outcome);
+  if (encoded != nullptr) return encoded;
+
+  // set_null() states a value rather than reporting a bad one.
+  if (outcome.is_null()) {
+    status = EncodeStatus::kNull;
     return nullptr;
   }
-  return encoded;
+
+  // error() aborts the statement with the extension's own message.
+  if (outcome.result_type == VEF_RESULT_ERROR && outcome.has_message()) {
+    villagesql_error("%s", MYF(0), outcome.message);
+    status = EncodeStatus::kErrorRaised;
+    return nullptr;
+  }
+
+  const TypeContext *tc = field->get_type_context();
+  THD *thd = current_thd;
+  // Encoding failed - invalid value for custom type
+  // Always push a warning (consistent with MySQL built-in types)
+  // Caller decides whether to also promote to error
+  // TODO(villagesql-general): an extension's own warning() message is dropped
+  // here; only the standard 1366 reaches the user.
+  const ErrConvString errmsg(from.ptr(), from.length(), from.charset());
+  const Diagnostics_area *da = thd->get_stmt_da();
+  push_warning_printf(
+      thd, Sql_condition::SL_WARNING, ER_TRUNCATED_WRONG_VALUE_FOR_FIELD,
+      ER_THD(thd, ER_TRUNCATED_WRONG_VALUE_FOR_FIELD), tc->type_name().c_str(),
+      errmsg.ptr(), field->field_name, da->current_row_for_condition());
+  status = EncodeStatus::kBadValue;
+  return nullptr;
 }
 
 // Lazily allocate a TypeDecoder for field, reused for all subsequent decodes.
@@ -809,6 +830,9 @@ void AppendFullyQualifiedName(const TypeContext &tc, String *out) {
   // Convert to the output charset. MySQL's dictionary type description uses
   // utf8mb3; the separately stored parameter JSON keeps the full UTF-8 text.
   out->append(name.c_str(), name.length(), type_parameter_collation());
+  // A converting append NUL-terminates its worst-case reservation, not the
+  // text, so terminate here for callers that use c_ptr().
+  (void)out->c_ptr_quick();
 }
 
 // Appends "extension_name.name", quoting each half.
@@ -890,10 +914,10 @@ bool InjectAndEncodeCustomType(Item *item, const TypeContext &tc) {
     return false;  // NULL value, nothing to encode
   }
 
-  bool is_valid = true;
-  String *encoded = EncodeForItem(item, *str_val, is_valid);
+  EncodeStatus status = EncodeStatus::kBadValue;
+  String *encoded = EncodeForItem(item, *str_val, status);
   if (encoded == nullptr) {
-    if (!is_valid) {
+    if (status == EncodeStatus::kBadValue) {
       const ErrConvString errmsg(str_val->ptr(), str_val->length(),
                                  str_item->collation.collation);
       my_error(ER_WRONG_VALUE, MYF(0), tc.type_name().c_str(), errmsg.ptr());
@@ -1263,10 +1287,18 @@ type_conversion_status TryEncodeStringFieldToCustom(Field *from_field,
     return set_field_to_null_with_conversions(to_field, false);
   }
 
-  bool is_oom = false;
-  String *encoded = EncodeStringForField(to_field, *str, is_oom);
+  EncodeStatus status = EncodeStatus::kBadValue;
+  String *encoded = EncodeStringForField(to_field, *str, status);
   if (encoded == nullptr) {
-    return is_oom ? TYPE_ERR_OOM : TYPE_ERR_BAD_VALUE;
+    switch (status) {
+      case EncodeStatus::kNull:
+        return set_field_to_null_with_conversions(to_field, false);
+      case EncodeStatus::kOom:
+        return TYPE_ERR_OOM;
+      case EncodeStatus::kErrorRaised:
+      case EncodeStatus::kBadValue:
+        return TYPE_ERR_BAD_VALUE;
+    }
   }
 
   to_field->set_notnull();
@@ -1275,20 +1307,28 @@ type_conversion_status TryEncodeStringFieldToCustom(Field *from_field,
 
 type_conversion_status EncodeAndStoreStringToCustomField(
     const String &str_value, Field *field) {
-  bool is_valid = true;
-  String *encoded = EncodeStringForField(field, str_value, is_valid);
+  EncodeStatus status = EncodeStatus::kBadValue;
+  String *encoded = EncodeStringForField(field, str_value, status);
   if (encoded == nullptr) {
-    return is_valid ? TYPE_ERR_OOM : TYPE_WARN_OUT_OF_RANGE;
+    switch (status) {
+      case EncodeStatus::kNull:
+        return set_field_to_null_with_conversions(field, false);
+      case EncodeStatus::kOom:
+        return TYPE_ERR_OOM;
+      case EncodeStatus::kErrorRaised:
+      case EncodeStatus::kBadValue:
+        return TYPE_ERR_BAD_VALUE;
+    }
   }
   return field->store(encoded->ptr(), encoded->length(), &my_charset_bin);
 }
 
 String *EncodeStringForCustomParam(Item *item, const String &str_value,
                                    bool &null_value) {
-  bool is_valid = true;
-  String *encoded = EncodeForItem(item, str_value, is_valid);
+  EncodeStatus status = EncodeStatus::kBadValue;
+  String *encoded = EncodeForItem(item, str_value, status);
   if (encoded == nullptr) {
-    if (!is_valid) {
+    if (status == EncodeStatus::kBadValue) {
       // Invalid value for custom type
       const TypeContext *tc = item->get_type_context();
       const ErrConvString errmsg(str_value.ptr(), str_value.length(),
@@ -1297,8 +1337,8 @@ String *EncodeStringForCustomParam(Item *item, const String &str_value,
                        tc->qualified_name().c_str(), errmsg.ptr(),
                        item->item_name.ptr());
     }
-
-    // else OOM - my_error already called
+    // kErrorRaised has already raised its own diagnostic.
+    // Signal "no string" to val_str() the usual way.
     null_value = true;
     return nullptr;
   }
@@ -1331,13 +1371,34 @@ type_conversion_status StoreCustomFieldIntrinsicDefault(Field *field) {
 
 bool LoadEncodeAndStoreCustomField(THD *thd, Field *field,
                                    const String &input_str) {
-  bool is_valid = false;
-  String *encoded = EncodeStringForField(field, input_str, is_valid);
+  EncodeStatus status = EncodeStatus::kBadValue;
+  String *encoded = EncodeStringForField(field, input_str, status);
   if (encoded != nullptr) {
     field->store(encoded->ptr(), encoded->length(), &my_charset_bin);
     return false;
   }
-  if (is_valid) return true;  // OOM case
+  switch (status) {
+    case EncodeStatus::kNull:
+      // Mirror a literal \N in the input: mark the field NULL and leave the
+      // NOT NULL decision to the row-level check once the row is complete,
+      // which reports ER_WARN_NULL_TO_NOTNULL. Storing a value here instead
+      // would satisfy that check and let a NOT NULL column through.
+      if (!field->is_nullable() && thd->lex->is_ignore()) {
+        // IGNORE keeps the row, so give it the type's intrinsic default
+        // rather than zero bytes, as the \N path does.
+        if (StoreCustomFieldIntrinsicDefault(field) != TYPE_OK) return true;
+        field->set_warning(Sql_condition::SL_WARNING, ER_WARN_NULL_TO_NOTNULL,
+                           1);
+        return false;
+      }
+      field->set_null();
+      return false;
+    case EncodeStatus::kOom:
+    case EncodeStatus::kErrorRaised:
+      return true;
+    case EncodeStatus::kBadValue:
+      break;  // handled below: whether this fails the row depends on the mode
+  }
   if (!thd->lex->is_ignore() && thd->is_strict_mode()) {
     // EncodeStringForField already pushed a warning; promote to error
     my_error(ER_TRUNCATED_WRONG_VALUE_FOR_FIELD, MYF(0),
@@ -1582,12 +1643,47 @@ static bool insert_tmp_metadata_for_thd(THD *thd, const ColumnKey &key,
   return false;
 }
 
-bool PrepareTmpTableCustomColumns(
-    THD *thd, const char *db, const char *table_name,
-    List<Create_field> &create_fields,
-    [[maybe_unused]] const HA_CREATE_INFO *create_info) {
+bool EnsureEngineIsInnodb(const handlerton *hton, const char *operation) {
+  assert(hton);
+  if (hton && hton->db_type != DB_TYPE_INNODB) {
+    villagesql_error(
+        "Custom types are only supported with InnoDB storage engine. "
+        "Cannot %s with %s storage engine.",
+        MYF(0), operation, ha_resolve_storage_engine_name(hton));
+    return true;
+  }
+  return false;
+}
+
+// Check that the tmp table is InnoDB if any column or index is custom-typed.
+static bool EnsureInnodbEngineForTmpTable(const HA_CREATE_INFO *create_info,
+                                          const Alter_info *alter_info,
+                                          const char *operation) {
   assert(create_info->options & HA_LEX_CREATE_TMP_TABLE);
-  List_iterator_fast<Create_field> it(create_fields);
+
+  bool has_custom = false;
+  for (const Create_field &cdef : alter_info->create_list) {
+    if (cdef.custom_type_context != nullptr) {
+      has_custom = true;
+      break;
+    }
+  }
+  for (const Key_spec *key : alter_info->key_list) {
+    if (has_custom) break;
+    has_custom = key->key_create_info.is_custom_index();
+  }
+
+  return has_custom && EnsureEngineIsInnodb(create_info->db_type, operation);
+}
+
+bool PrepareTmpTableCustomColumns(THD *thd, const char *db,
+                                  const char *table_name,
+                                  Alter_info *alter_info,
+                                  const HA_CREATE_INFO *create_info) {
+  assert(create_info->options & HA_LEX_CREATE_TMP_TABLE);
+  if (EnsureInnodbEngineForTmpTable(create_info, alter_info, "create table"))
+    return true;
+  List_iterator_fast<Create_field> it(alter_info->create_list);
   Create_field *cdef;
   while ((cdef = it++) != nullptr) {
     if (cdef->custom_type_context == nullptr) continue;
@@ -1625,13 +1721,20 @@ void RemoveTmpTableMetadata(THD *thd, TABLE *table) {
   RemoveTmpTableMetadata(thd, table->s->db.str, table->s->table_name.str);
 }
 
-void PrepareAlterCustomFields(THD *thd, const List<Create_field> &create_list) {
+bool PrepareAlterCustomFields(THD *thd, const Alter_info *alter_info,
+                              const HA_CREATE_INFO *create_info) {
   thd->villagesql_alter_custom_fields.clear();
-  for (const Create_field &cdef : create_list) {
+
+  if ((create_info->options & HA_LEX_CREATE_TMP_TABLE) &&
+      EnsureInnodbEngineForTmpTable(create_info, alter_info, "alter table"))
+    return true;
+
+  for (const Create_field &cdef : alter_info->create_list) {
     if (cdef.custom_type_context != nullptr)
       thd->villagesql_alter_custom_fields.emplace(cdef.field_name,
                                                   cdef.custom_type_context);
   }
+  return false;
 }
 
 void SetAlterTargetForCustomIndexes(THD *thd, const TABLE *old_table) {
@@ -1692,11 +1795,13 @@ struct KnownEntry {
 // parameters: nothing is collected and differing sibling params are not an
 // error.
 //
-// The caller must handle varargs before calling this -- signature->params is
-// null for a varargs function. Returns true on error (error already raised).
+// expected_types is what each argument is required to be: signature->params
+// for a fixed-arity function, or the types a bind_and_check_types hook
+// declared for a varargs one.
+// Returns true on error (error already raised).
 static bool ValidateVDFArguments(
     const char *func_name, std::string_view extension_name, uint arg_count,
-    Item **args, const vef_signature_t *signature,
+    Item **args, std::span<const vef_type_t> expected_types,
     std::map<std::string, KnownEntry> *out_known_params) {
   // Passing nullptr switches off parameter sharing between arguments: nothing
   // is collected for pass 2 to propagate, and two arguments of the same custom
@@ -1704,11 +1809,11 @@ static bool ValidateVDFArguments(
   const bool collect_shared_params = (out_known_params != nullptr);
 
   // Validate argument count matches signature
-  if (arg_count != signature->param_count) {
+  if (arg_count != expected_types.size()) {
     villagesql_error(
         "Cannot initialize function '%s': wrong number of arguments "
         "(expected %u, got %u)",
-        MYF(0), func_name, signature->param_count, arg_count);
+        MYF(0), func_name, static_cast<uint>(expected_types.size()), arg_count);
     return true;
   }
 
@@ -1722,7 +1827,7 @@ static bool ValidateVDFArguments(
   std::map<std::string, KnownEntry> known_params;
 
   for (uint i = 0; i < arg_count; i++) {
-    const vef_type_t &expected_type = signature->params[i];
+    const vef_type_t &expected_type = expected_types[i];
     if (expected_type.id != VEF_TYPE_CUSTOM) continue;
     if (args[i]->type() == Item::NULL_ITEM) continue;
 
@@ -1778,7 +1883,7 @@ static bool ValidateVDFArguments(
 // type that needs them errors out.
 static bool ConvertVDFArguments(
     THD *thd, const char *func_name, std::string_view extension_name,
-    uint arg_count, Item **args, const vef_signature_t *signature,
+    uint arg_count, Item **args, std::span<const vef_type_t> expected_types,
     const std::map<std::string, KnownEntry> &known_params,
     const std::vector<TypeParameters> &hook_arg_params) {
   // The two sources are alternatives: the server fills known_params when it
@@ -1800,7 +1905,7 @@ static bool ConvertVDFArguments(
   };
 
   for (uint i = 0; i < arg_count; i++) {
-    const vef_type_t &expected_type = signature->params[i];
+    const vef_type_t &expected_type = expected_types[i];
     if (expected_type.id != VEF_TYPE_CUSTOM) continue;
     if (args[i]->type() == Item::NULL_ITEM) continue;
 
@@ -1832,9 +1937,18 @@ static bool ConvertVDFArguments(
                                  *params, *thd->mem_root, resolved_tc)) {
           return true;
         }
-        if (resolved_tc != nullptr) {
-          args[i]->set_type_context(resolved_tc);
+        if (resolved_tc == nullptr) {
+          // Defensive. The name was resolved in BuildVarargsExpectedTypes
+          // (varargs) or comes from the compiled signature (fixed arity), and
+          // pass 1 matched it against this argument's own type, so it should
+          // always resolve here.
+          villagesql_error(
+              "Cannot initialize function '%s': custom type '%s' not found for "
+              "argument %u",
+              MYF(0), func_name, expected_type.custom_type, i + 1);
+          return true;
         }
+        args[i]->set_type_context(resolved_tc);
       } else {
         // Neither the hook nor the built-in rules could supply params.
         villagesql_error(
@@ -1938,11 +2052,12 @@ static constexpr size_t kBindParamsBufLen = VEF_MAX_TYPE_PARAMS_STRING_LEN;
 // Fills out_arg_params[i] for each argument the hook resolved (left empty where
 // it had nothing to say) and *out_return_params for the return type. Returns
 // true on error (error already raised).
-static bool CallBindTypesHook(const vef_bind_types_func_t bind_and_check,
-                              vef_context_t &ctx, const char *func_name,
-                              uint arg_count, Item **args,
-                              std::vector<TypeParameters> *out_arg_params,
-                              TypeParameters *out_return_params) {
+static bool CallBindTypesHook(
+    const vef_bind_types_func_t bind_and_check, vef_context_t &ctx,
+    const char *func_name, uint arg_count, Item **args,
+    std::vector<TypeParameters> *out_arg_params,
+    TypeParameters *out_return_params,
+    std::vector<std::string> *out_arg_type_names = nullptr) {
   std::vector<vef_type_t> arg_types(arg_count);
   std::vector<char *> const_values(arg_count, nullptr);
   std::vector<size_t> const_lengths(arg_count, 0);
@@ -1972,21 +2087,13 @@ static bool CallBindTypesHook(const vef_bind_types_func_t bind_and_check,
                          params.value_data()};
       }
     } else {
-      switch (args[i]->result_type()) {
-        case REAL_RESULT:
-          arg_types[i].id = VEF_TYPE_REAL;
-          break;
-        case INT_RESULT:
-          arg_types[i].id = VEF_TYPE_INT;
-          break;
-        default:
-          arg_types[i].id = VEF_TYPE_STRING;
-          break;
-      }
+      arg_types[i].id = InferArgTypeId(args[i]);
       arg_types[i].custom_type = nullptr;
     }
-    // Provide constant string values where available
-    if (args[i]->const_for_execution() && arg_types[i].id == VEF_TYPE_STRING) {
+    // Provide constant string values where available. A prepared-statement
+    // parameter has no value until EXECUTE.
+    if (args[i]->const_for_execution() && args[i]->type() != Item::PARAM_ITEM &&
+        arg_types[i].id == VEF_TYPE_STRING) {
       String *v = args[i]->val_str(&const_store[i]);
       if (v != nullptr && !args[i]->null_value) {
         const_values[i] = const_cast<char *>(v->ptr());
@@ -2007,6 +2114,24 @@ static bool CallBindTypesHook(const vef_bind_types_func_t bind_and_check,
     out_arg_slots[i] = &out_args[i];
   }
 
+  // The type-name channel is offered only for a varargs call:
+  // a fixed-arity signature already says what each argument
+  // must be.
+  const bool offer_arg_types = out_arg_type_names != nullptr && arg_count > 0;
+  std::vector<vef_inferred_type_params_t> out_names;
+  std::vector<vef_inferred_type_params_t *> out_name_slots;
+  std::vector<char> name_bufs;
+  if (offer_arg_types) {
+    out_names.resize(arg_count);
+    out_name_slots.resize(arg_count);
+    name_bufs.resize(arg_count * VEF_MAX_TYPE_NAME_LEN);
+    for (uint i = 0; i < arg_count; i++) {
+      out_names[i].buf = name_bufs.data() + i * VEF_MAX_TYPE_NAME_LEN;
+      out_names[i].max_buf_len = VEF_MAX_TYPE_NAME_LEN;
+      out_name_slots[i] = &out_names[i];
+    }
+  }
+
   char return_buf[kBindParamsBufLen];
   char err_msg[VEF_MAX_ERROR_LEN] = {0};
   vef_inferred_type_params_t out_return{};
@@ -2025,6 +2150,7 @@ static bool CallBindTypesHook(const vef_bind_types_func_t bind_and_check,
   out_return.max_buf_len = sizeof(return_buf);
   bt_result.out_return_params = &out_return;
   bt_result.out_arg_params = arg_count > 0 ? out_arg_slots.data() : nullptr;
+  bt_result.out_arg_types = offer_arg_types ? out_name_slots.data() : nullptr;
 
   bind_and_check(&ctx, &bt_args, &bt_result);
 
@@ -2071,6 +2197,77 @@ static bool CallBindTypesHook(const vef_bind_types_func_t bind_and_check,
         return true;
       }
     }
+
+    if (!offer_arg_types) continue;
+    if (out_names[i].overflow) {
+      villagesql_error(
+          "Cannot initialize function '%s': bind_and_check_types type name too "
+          "long for argument %u",
+          MYF(0), func_name, i + 1);
+      return true;
+    }
+    if (out_names[i].actual_len > 0) {
+      (*out_arg_type_names)[i] =
+          std::string(out_names[i].buf, out_names[i].actual_len);
+    }
+  }
+  return false;
+}
+
+vef_type_id InferArgTypeId(const Item *item) {
+  if (item->get_type_context() != nullptr) return VEF_TYPE_CUSTOM;
+  switch (item->result_type()) {
+    case REAL_RESULT:
+      return VEF_TYPE_REAL;
+    case INT_RESULT:
+      return VEF_TYPE_INT;
+    default:
+      return VEF_TYPE_STRING;
+  }
+}
+
+// Turns a varargs hook's answers into the expected-type array the two passes
+// consume. A type the hook named is looked up rather than trusted; an
+// argument the hook stayed silent about keeps the type it already carries.
+//
+// name_store owns the names, and out_expected points into it.
+// Returns true on error (already raised).
+static bool BuildVarargsExpectedTypes(
+    const char *func_name, std::string_view extension_name, uint arg_count,
+    Item **args, const std::vector<std::string> &hook_names,
+    std::vector<std::string> *name_store,
+    std::vector<vef_type_t> *out_expected) {
+  for (uint i = 0; i < arg_count; i++) {
+    if (hook_names[i].empty()) {
+      // The hook said nothing, so the argument stands as the server already
+      // typed it.
+      const auto *tc = args[i]->get_type_context();
+      if (tc != nullptr) (*name_store)[i] = tc->type_name();
+      continue;
+    }
+
+    // The name is extension-supplied, so look it up rather than trust it.
+    const TypeDescriptor *td = nullptr;
+    if (ResolveTypeDescriptor(extension_name, hook_names[i], td)) return true;
+    if (td == nullptr) {
+      villagesql_error(
+          "Cannot initialize function '%s': bind_and_check_types named unknown "
+          "custom type '%s' for argument %u",
+          MYF(0), func_name, hook_names[i].c_str(), i + 1);
+      return true;
+    }
+    // Copy the canonical spelling: the read lock is gone once we return, and
+    // an UNINSTALL EXTENSION could free the registry entry behind it.
+    (*name_store)[i] = td->type_name();
+  }
+
+  for (uint i = 0; i < arg_count; i++) {
+    if ((*name_store)[i].empty()) {
+      // Not a custom argument, so record what it actually is.
+      (*out_expected)[i] = {InferArgTypeId(args[i]), nullptr};
+    } else {
+      (*out_expected)[i] = {VEF_TYPE_CUSTOM, (*name_store)[i].c_str()};
+    }
   }
   return false;
 }
@@ -2082,13 +2279,61 @@ bool ValidateAndConvertVDFArguments(THD *thd, const char *func_name,
                                     TypeParameters *out_return_params,
                                     const vef_bind_types_func_t bind_and_check,
                                     vef_context_t &ctx) {
-  // Varargs: skip both arg-count and per-arg type validation. The function's
-  // prerun hook is responsible for inspecting arg_count and arg_types and
-  // rejecting calls it does not accept.
-  if (signature->param_count == VEF_PARAM_VARARGS) {
-    return false;
-  }
   const bool has_bind_hook = nullptr != bind_and_check;
+  const bool varargs = signature->param_count == VEF_PARAM_VARARGS;
+
+  // Varargs without a hook: skip both arg-count and per-arg type validation.
+  // The function's prerun hook is responsible for inspecting arg_count and
+  // arg_types and rejecting calls it does not accept.
+  if (varargs && !has_bind_hook) return false;
+
+  // Backing store for a varargs expected-type array.
+  std::vector<std::string> name_store;
+  std::vector<vef_type_t> varargs_expected;
+
+  // One slot per argument for whatever the hook resolves; left empty when
+  // there is no hook.
+  std::vector<TypeParameters> hook_arg_params;
+  if (has_bind_hook) hook_arg_params.resize(arg_count);
+
+  if (varargs) {
+    // Varargs runs the hook first, because there is no signature to check
+    // arguments against and the hook supplies what signature->params would
+    // have.
+    std::vector<std::string> hook_arg_type_names(arg_count);
+    if (CallBindTypesHook(bind_and_check, ctx, func_name, arg_count, args,
+                          &hook_arg_params, out_return_params,
+                          &hook_arg_type_names)) {
+      return true;
+    }
+    // Parameters are only ever applied to an argument that has a type, and a
+    // varargs call has no signature to take one from. Thus, a hook cannot
+    // supply parameters without also naming the type.
+    for (uint i = 0; i < arg_count; i++) {
+      if (hook_arg_params[i].empty() || !hook_arg_type_names[i].empty()) {
+        continue;
+      }
+      villagesql_error(
+          "Cannot initialize function '%s': bind_and_check_types supplied type "
+          "parameters for argument %u without naming its type",
+          MYF(0), func_name, i + 1);
+      return true;
+    }
+
+    name_store.resize(arg_count);
+    varargs_expected.resize(arg_count);
+    if (BuildVarargsExpectedTypes(func_name, extension_name, arg_count, args,
+                                  hook_arg_type_names, &name_store,
+                                  &varargs_expected)) {
+      return true;
+    }
+  }
+
+  // What each argument is required to be.
+  const std::span<const vef_type_t> expected_types =
+      varargs ? std::span<const vef_type_t>{varargs_expected}
+              : std::span<const vef_type_t>{signature->params,
+                                            signature->param_count};
 
   // A bind_and_check_types hook replaces the built-in type disambiguation
   // rules. Passing nullptr is the off switch: known_params stays empty, so
@@ -2099,16 +2344,17 @@ bool ValidateAndConvertVDFArguments(THD *thd, const char *func_name,
   // applying whatever the hook decided below.
   std::map<std::string, KnownEntry> known_params;
   if (ValidateVDFArguments(func_name, extension_name, arg_count, args,
-                           signature,
+                           expected_types,
                            has_bind_hook ? nullptr : &known_params)) {
     return true;
   }
 
-  // The hook sits between the passes: it sees what pass 1 resolved, and the
-  // params it decides are what pass 2 applies.
-  std::vector<TypeParameters> hook_arg_params;
-  if (has_bind_hook) {
-    hook_arg_params.resize(arg_count);
+  // Fixed arity runs the hook here. The hook sits between the passes:
+  // it sees what pass 1 resolved, and the params it decides are what
+  // pass 2 applies.
+  if (has_bind_hook && !varargs) {
+    // The type-name argument is left at its default: a fixed-arity signature
+    // already declares every argument's type, so the hook has nothing to name.
     if (CallBindTypesHook(bind_and_check, ctx, func_name, arg_count, args,
                           &hook_arg_params, out_return_params)) {
       return true;
@@ -2116,12 +2362,13 @@ bool ValidateAndConvertVDFArguments(THD *thd, const char *func_name,
   }
 
   if (ConvertVDFArguments(thd, func_name, extension_name, arg_count, args,
-                          signature, known_params, hook_arg_params)) {
+                          expected_types, known_params, hook_arg_params)) {
     return true;
   }
 
   // Nothing left to work out: the hook already supplied the return type's
-  // params, so skip the built-in rule below.
+  // params, so skip the built-in rule below. A varargs call always has a hook
+  // by the time it reaches here, so what follows is fixed-arity only.
   if (has_bind_hook) return false;
 
   if (out_return_params != nullptr) {
