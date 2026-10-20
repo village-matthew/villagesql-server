@@ -104,7 +104,7 @@ SELECT id, val FROM t2 ORDER BY id;
 id	val
 1	OK good
 INSERT INTO t2 VALUES (3, 'ENCODE_THROW');
-ERROR HY000: Incorrect FAULT_BLOB value: 'ENCODE_THROW' for column 'val' at row 1
+ERROR HY000: VDF threw an exception (fault blob encode throw)
 DROP TABLE t2;
 UNINSTALL EXTENSION vsql_test_only;
 # Verify extension was removed

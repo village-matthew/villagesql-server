@@ -120,7 +120,6 @@ SELECT id, val FROM t1 ORDER BY id;
 
 --echo # Clean up
 DROP TABLE t1;
---remove_file $MYSQLTEST_VARDIR/tmp/decode_fail_log_pos.txt
 
 --echo # ENCODE_FAIL: INSERT is rejected with an error, nothing is stored
 CREATE TABLE t2 (
@@ -135,11 +134,13 @@ INSERT INTO t2 VALUES (2, 'ENCODE_FAIL');
 --echo # Only the successful row was stored
 SELECT id, val FROM t2 ORDER BY id;
 
---error 1366
+--replace_result fault_blob_encode "fault blob encode"
+--error 3219
 INSERT INTO t2 VALUES (3, 'ENCODE_THROW');
 
 DROP TABLE t2;
 
+--remove_file $MYSQLTEST_VARDIR/tmp/decode_fail_log_pos.txt
 UNINSTALL EXTENSION vsql_test_only;
 
 --echo # Verify extension was removed
