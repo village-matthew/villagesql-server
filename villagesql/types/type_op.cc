@@ -44,7 +44,7 @@ int CompareOp::invoke(const unsigned char *data1, size_t len1,
   auto result = call.invoke(BinarySlice{data1, len1}, BinarySlice{data2, len2});
   if (!result) {
     villagesql_error("compare VDF '%s' returned error: %s", MYF(0), call.name(),
-            call.error_msg());
+                     call.error_msg());
     return 0;
   }
   return static_cast<int>(*result);
@@ -65,7 +65,7 @@ size_t HashOp::invoke(const unsigned char *data, size_t len) const {
   auto result = call.invoke(BinarySlice{data, len});
   if (!result) {
     villagesql_error("hash VDF '%s' returned error: %s", MYF(0), call.name(),
-            call.error_msg());
+                     call.error_msg());
     return 0;
   }
   return static_cast<size_t>(*result);
